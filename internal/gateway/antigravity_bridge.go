@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -63,6 +64,138 @@ func validateAntigravityTokenLimit(from provider.Protocol, body []byte) error {
 		return checkField("max_tokens")
 	case provider.Responses:
 		return checkField("max_output_tokens")
+	}
+	return nil
+}
+
+// checkJsonObjectBytes checks whether b represents a valid JSON object without trailing data.
+func checkJsonObjectBytes(b []byte, path string) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return fmt.Errorf("%s must be a valid JSON object", path)
+	}
+	return nil
+}
+
+// checkStringArguments checks whether raw is a JSON string representing a valid JSON object.
+func checkStringArguments(raw json.RawMessage, path string) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("%s is required", path)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return fmt.Errorf("%s cannot be null", path)
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return fmt.Errorf("%s must be a JSON string", path)
+	}
+	trimmedStr := strings.TrimSpace(s)
+	if trimmedStr == "" || trimmedStr == "null" {
+		return fmt.Errorf("%s must be a non-empty JSON object string", path)
+	}
+	return checkJsonObjectBytes([]byte(trimmedStr), path)
+}
+
+// validateAntigravityToolArgs validates tool call arguments for Antigravity target requests before parse.
+// Reason: Validating tool call arguments before parse prevents parseArgs from masking broken JSON
+// into {"input": ...} and prevents argsOf from defaulting empty arguments to "{}", preserving exact
+// business keys, numerical precision, and error positions for Antigravity requests.
+func validateAntigravityToolArgs(from provider.Protocol, body []byte) error {
+	switch from {
+	case provider.Anthropic:
+		var req struct {
+			Messages []struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		for i, m := range req.Messages {
+			if len(m.Content) == 0 {
+				continue
+			}
+			trimmed := bytes.TrimSpace(m.Content)
+			if bytes.HasPrefix(trimmed, []byte("[")) {
+				var blocks []struct {
+					Type  string          `json:"type"`
+					Input json.RawMessage `json:"input"`
+				}
+				if err := json.Unmarshal(trimmed, &blocks); err != nil {
+					return err
+				}
+				for j, b := range blocks {
+					if b.Type == "tool_use" {
+						path := fmt.Sprintf("messages[%d].content[%d].input", i, j)
+						if len(b.Input) == 0 {
+							return fmt.Errorf("%s is required", path)
+						}
+						trimmedInput := bytes.TrimSpace(b.Input)
+						if bytes.Equal(trimmedInput, []byte("null")) {
+							return fmt.Errorf("%s cannot be null", path)
+						}
+						if err := checkJsonObjectBytes(trimmedInput, path); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+	case provider.Chat:
+		var req struct {
+			Messages []struct {
+				Role      string `json:"role"`
+				ToolCalls []struct {
+					Function map[string]json.RawMessage `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		for i, m := range req.Messages {
+			if m.Role != "assistant" {
+				continue
+			}
+			for j, tc := range m.ToolCalls {
+				path := fmt.Sprintf("messages[%d].tool_calls[%d].function.arguments", i, j)
+				argRaw, exists := tc.Function["arguments"]
+				if !exists {
+					return fmt.Errorf("%s is required", path)
+				}
+				if err := checkStringArguments(argRaw, path); err != nil {
+					return err
+				}
+			}
+		}
+	case provider.Responses:
+		var req struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return err
+		}
+		if len(req.Input) > 0 {
+			trimmed := bytes.TrimSpace(req.Input)
+			if bytes.HasPrefix(trimmed, []byte("[")) {
+				var items []struct {
+					Type      string          `json:"type"`
+					Arguments json.RawMessage `json:"arguments"`
+				}
+				if err := json.Unmarshal(trimmed, &items); err != nil {
+					return err
+				}
+				for i, it := range items {
+					if it.Type == "function_call" {
+						path := fmt.Sprintf("input[%d].arguments", i)
+						if err := checkStringArguments(it.Arguments, path); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 	}
 	return nil
 }

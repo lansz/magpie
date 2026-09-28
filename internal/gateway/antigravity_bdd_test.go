@@ -9,4 +9,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B01_JSONEqualExact", testB01JSONEqualExact)
 	t.Run("B02_AgentBridge", testB02AgentBridge)
 	t.Run("B03_OutputTokenLimit", testB03OutputTokenLimit)
+	t.Run("B03b_ToolArgsValidation", testB03bToolArgsValidation)
 }
