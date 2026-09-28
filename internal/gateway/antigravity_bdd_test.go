@@ -7,4 +7,5 @@ import "testing"
 func TestAntigravityBDD(t *testing.T) {
 	t.Run("B01_FixtureValidation", testB01FixtureValidation)
 	t.Run("B01_JSONEqualExact", testB01JSONEqualExact)
+	t.Run("B02_AgentBridge", testB02AgentBridge)
 }

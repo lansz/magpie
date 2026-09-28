@@ -1085,7 +1085,8 @@ func responsesFirst(p provider.Provider, model string) bool {
 // Claude models only /chat/completions — so when it says the model isn't
 // served on this one, the request is built again for the next endpoint it
 // speaks, and the model is remembered there.
-func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, req *Request, model string, in http.Header) (*http.Response, provider.Protocol, error) {
+func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to provider.Protocol, breq *bridgeRequest, model string, in http.Header) (*http.Response, provider.Protocol, error) {
+	req := breq.Request
 	if req.Effort != "" {
 		if e := fitEffort(req.Effort, p.Efforts(model)); e != req.Effort {
 			r := *req
@@ -1163,7 +1164,8 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
-	if request.WebSearch && !searching(r.Context()) {
+	breq := newBridgeRequest(request, from, "")
+	if breq.WebSearch && !searching(r.Context()) {
 		// an API on which the provider searches by itself comes first;
 		// without one, its model is given magpie's search
 		for _, t := range s.usable(p, model) {
@@ -1173,21 +1175,21 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			}
 		}
 		if _, _, ok := searcher(); ok && !searchesItself(p, to) {
-			return s.searchReply(w, r, from, p.Name, request, u, s.askTranslated(p, to, model, r.Header, w.Header()))
+			return s.searchReply(w, r, breq.sourceProto, p.Name, breq.Request, u, s.askTranslated(p, to, model, r.Header, w.Header(), breq.sourceProto, breq.clientProfile))
 		}
 	}
-	stream := request.Stream
-	request.Stream = true
-	res, actual, err := s.forwardTranslated(r.Context(), p, to, request, model, r.Header)
+	stream := breq.Stream
+	breq.Stream = true
+	res, actual, err := s.forwardTranslated(r.Context(), p, to, breq, model, r.Header)
 	if err != nil {
-		return writeError(w, from, 502, p.Name+": "+err.Error()), err.Error()
+		return writeError(w, breq.sourceProto, 502, p.Name+": "+err.Error()), err.Error()
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		msg := p.Name + ": " + provider.APIError(b, res.Status)
 		keepRetry(w.Header(), res.Header, b)
-		return writeError(w, from, res.StatusCode, msg), msg
+		return writeError(w, breq.sourceProto, res.StatusCode, msg), msg
 	}
 	dec := decoder(actual)
 	rd, sse := eventStream(res)
@@ -1196,10 +1198,10 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		// event stream would be wrong, so give up cleanly
 		b, _ := io.ReadAll(io.LimitReader(rd, 1<<20))
 		msg := p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
-		return writeError(w, from, 502, msg), msg
+		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
 	if stream {
-		enc := encoder(from, newSSEWriter(w), request.Model)
+		enc := encoder(breq.sourceProto, newSSEWriter(w), breq.Model)
 		var failed string
 		serr := readSSE(rd, func(_, data string) error {
 			return dec(data, func(ev Event) {
@@ -1229,14 +1231,14 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	}); err != nil {
 		// a partial answer is not an answer
 		msg := p.Name + ": " + err.Error()
-		return writeError(w, from, 502, msg), msg
+		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
 	if col.err != "" && len(col.res.Parts) == 0 {
-		return writeError(w, from, 502, p.Name+": "+col.err), col.err
+		return writeError(w, breq.sourceProto, 502, p.Name+": "+col.err), col.err
 	}
 	res2 := col.finish()
 	u.add(res2.Usage)
-	out := render(from, res2, request.Model)
+	out := render(breq.sourceProto, res2, breq.Model)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	w.Write(out)
