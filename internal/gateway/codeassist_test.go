@@ -88,11 +88,11 @@ func TestBuildCodeAssistForAntigravity(t *testing.T) {
 		t.Errorf("parameters =\n%s\nwant\n%s", params, want)
 	}
 
-	// a Gemini model on Antigravity has no output cap sent, and a thinking
+	// a Gemini model on Antigravity preserves explicit maxOutputTokens, and a thinking
 	// Claude has room past its budget
 	json.Unmarshal(buildCodeAssist(codeAssistRequest(t), "gemini-3-flash", "antigravity"), &env)
-	if gen, _ := env.Request["generationConfig"].(map[string]any); gen["maxOutputTokens"] != nil {
-		t.Errorf("gen = %v", gen)
+	if gen, _ := env.Request["generationConfig"].(map[string]any); gen["maxOutputTokens"] != float64(2000) {
+		t.Errorf("gen = %v, want maxOutputTokens 2000", gen)
 	}
 	r := codeAssistRequest(t)
 	r.MaxTokens = 0

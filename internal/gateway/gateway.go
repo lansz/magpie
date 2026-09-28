@@ -1160,6 +1160,11 @@ func wrongEndpoint(status int, body []byte) bool {
 // one to it. The provider is always streamed; the client gets whichever
 // it asked for.
 func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Provider, from, to provider.Protocol, model string, body []byte, u *Usage) (int, string) {
+	if p.Account != nil && p.Account.Agent == "antigravity" {
+		if err := validateAntigravityTokenLimit(from, body); err != nil {
+			return writeError(w, from, 400, err.Error()), err.Error()
+		}
+	}
 	request, err := parse(from, body)
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()

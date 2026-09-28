@@ -130,7 +130,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 	}
 
 	gen := map[string]any{}
-	if r.MaxTokens > 0 && (!ag || claude) {
+	if r.MaxTokens > 0 {
 		gen["maxOutputTokens"] = r.MaxTokens
 	}
 	if r.Temp != nil {
