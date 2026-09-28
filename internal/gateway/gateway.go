@@ -1170,6 +1170,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		if err := validateAntigravityImages(from, body); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
+		if err := validateAntigravityBlockTypes(from, body); err != nil {
+			return writeError(w, from, 400, err.Error()), err.Error()
+		}
 	}
 	request, err := parse(from, body)
 	if err != nil {
