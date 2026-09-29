@@ -1262,7 +1262,15 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		var failed string
 		var agBufferedParts []canonicalPart
 		serr := readSSE(rd, func(_, data string) error {
+			if r.Context().Err() != nil {
+				failed = r.Context().Err().Error()
+				return r.Context().Err()
+			}
 			return dec(data, func(ev Event) {
+				if r.Context().Err() != nil {
+					failed = r.Context().Err().Error()
+					return
+				}
 				switch ev.Kind {
 				case KError:
 					failed = ev.Text
@@ -1289,7 +1297,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 					}
 				case KStop:
 					// Reason: B15 requires atomic commit before normal client completion is signaled.
-					if isAg && failed == "" {
+					if isAg && failed == "" && r.Context().Err() == nil {
 						if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, nil); err != nil {
 							failed = "storage commit failed: " + err.Error()
 							enc.event(Event{Kind: KError, Text: failed})
