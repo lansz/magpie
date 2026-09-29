@@ -53,14 +53,31 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 					parts = append(parts, map[string]any{"fileData": map[string]any{"mimeType": p.MediaType, "fileUri": p.URL}})
 				}
 			case ToolCall:
-				names[p.ID] = p.Name
-				call := map[string]any{"name": p.Name, "args": json.RawMessage(argsOf(p))}
-				if id := toolID(p.ID); id != "" {
-					call["id"] = id
+				name := p.Name
+				args := json.RawMessage(argsOf(p))
+				id := p.ID
+				if ag {
+					if binding, ok := defaultToolBindingStore.LookupByClientID(p.ID); ok {
+						name = binding.NativeName
+						args = json.RawMessage(binding.NativeArgs)
+						id = binding.NativeID
+					}
+				}
+				names[p.ID] = name
+				call := map[string]any{"name": name, "args": args}
+				if tid := toolID(id); tid != "" {
+					call["id"] = tid
 				}
 				parts = append(parts, map[string]any{"functionCall": call, "thoughtSignature": skipSignature})
 			case ToolResult:
 				name := names[p.CallID]
+				resID := p.CallID
+				if ag {
+					if binding, ok := defaultToolBindingStore.LookupByClientID(p.CallID); ok {
+						name = binding.NativeName
+						resID = binding.NativeID
+					}
+				}
 				if name == "" {
 					name = "tool"
 				}
@@ -71,8 +88,8 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 					key = "error"
 				}
 				res := map[string]any{"name": name, "response": map[string]any{key: p.Text}}
-				if id := toolID(p.CallID); id != "" {
-					res["id"] = id
+				if tid := toolID(resID); tid != "" {
+					res["id"] = tid
 				}
 				parts = append(parts, map[string]any{"functionResponse": res})
 			}
