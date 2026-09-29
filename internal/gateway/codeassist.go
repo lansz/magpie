@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -506,7 +507,7 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		geminiChunk
 	}
 	if err := json.Unmarshal([]byte(data), &ch); err != nil {
-		return nil
+		return fmt.Errorf("corrupted SSE json chunk: %w", err)
 	}
 	if ch.Error != nil {
 		emit(Event{Kind: KError, Text: ch.Error.Message})
@@ -553,6 +554,10 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		}
 		if cand.FinishReason != "" && !d.stopped {
 			d.stopped = true
+			if cand.FinishReason == "MALFORMED_FUNCTION_CALL" || cand.FinishReason == "UNEXPECTED_TOOL_CALL" {
+				emit(Event{Kind: KError, Text: "upstream protocol error: " + cand.FinishReason})
+				return nil
+			}
 			stop := stopFromGemini(cand.FinishReason)
 			if d.tools && stop == "stop" {
 				stop = "tool"
@@ -589,8 +594,6 @@ func stopFromGemini(s string) string {
 	case "MAX_TOKENS":
 		return "length"
 	case "STOP", "FINISH_REASON_UNSPECIFIED", "OTHER":
-		return "stop"
-	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL":
 		return "stop"
 	}
 	// SAFETY, RECITATION, BLOCKLIST, PROHIBITED_CONTENT, SPII, ...
