@@ -23,4 +23,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B10_ToolResult", testB10ToolResult)
 	t.Run("B11_Signature", testB11Signature)
 	t.Run("B12_Carrier", testB12Carrier)
+	t.Run("B13_CarrierlessHistory", testB13CarrierlessHistory)
 }
