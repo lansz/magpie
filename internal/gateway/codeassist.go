@@ -40,12 +40,22 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 			role = "model"
 		}
 		var parts []map[string]any
+		var pendingSignature string
 		for _, p := range m.Parts {
 			switch p.Kind {
-			case Text:
-				textPart := map[string]any{"text": p.Text}
+			case Thinking:
 				if p.Signature != "" && ag {
-					textPart["thoughtSignature"] = p.Signature
+					pendingSignature = p.Signature
+				}
+			case Text:
+				sig := p.Signature
+				if sig == "" && pendingSignature != "" && ag {
+					sig = pendingSignature
+					pendingSignature = ""
+				}
+				textPart := map[string]any{"text": p.Text}
+				if sig != "" && ag {
+					textPart["thoughtSignature"] = sig
 				}
 				if p.Text != "" {
 					parts = append(parts, textPart)
@@ -61,6 +71,10 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				args := json.RawMessage(argsOf(p))
 				id := p.ID
 				sig := p.Signature
+				if sig == "" && pendingSignature != "" && ag {
+					sig = pendingSignature
+					pendingSignature = ""
+				}
 				if ag {
 					if binding, ok := defaultToolBindingStore.LookupByClientID(p.ID); ok {
 						name = binding.NativeName
