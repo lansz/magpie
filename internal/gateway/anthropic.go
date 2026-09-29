@@ -97,7 +97,7 @@ func parseAnthropic(body []byte) (*Request, error) {
 				case "tool_use":
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: b.ID, Name: b.Name, Args: b.Input})
 				case "tool_result":
-					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: b.ToolUseID, Text: stringOrText(b.Content), IsError: b.IsError})
+					msg.Parts = append(msg.Parts, Part{Kind: ToolResult, CallID: b.ToolUseID, Text: stringOrText(b.Content), IsError: b.IsError, Images: toolResultImages(b.Content)})
 				case "thinking":
 					msg.Parts = append(msg.Parts, Part{Kind: Thinking, Text: b.Thinking, Signature: b.Signature})
 				}
@@ -634,4 +634,30 @@ func searchResultBlock(id string, hits []Hit) map[string]any {
 
 func newID() string {
 	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+// toolResultImages extracts image parts embedded inside an Anthropic tool_result block.
+func toolResultImages(raw json.RawMessage) []Part {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []struct {
+		Type   string `json:"type"`
+		Source *struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+			URL       string `json:"url"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	var imgs []Part
+	for _, blk := range blocks {
+		if blk.Type == "image" && blk.Source != nil {
+			imgs = append(imgs, Part{Kind: Image, MediaType: blk.Source.MediaType, Data: blk.Source.Data, URL: blk.Source.URL})
+		}
+	}
+	return imgs
 }

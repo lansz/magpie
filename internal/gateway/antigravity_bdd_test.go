@@ -20,4 +20,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B07_ParentResponse", testB07ParentResponse)
 	t.Run("B08_ToolBinding", testB08ToolBinding)
 	t.Run("B09_SchemaChoice", testB09SchemaChoice)
+	t.Run("B10_ToolResult", testB10ToolResult)
 }

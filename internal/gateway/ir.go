@@ -45,6 +45,7 @@ type Part struct {
 	// tool_result
 	CallID  string
 	IsError bool
+	Images  []Part // images embedded in tool result
 
 	// thinking
 	Signature string

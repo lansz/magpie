@@ -91,6 +91,19 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				if tid := toolID(resID); tid != "" {
 					res["id"] = tid
 				}
+				if len(p.Images) > 0 {
+					var imgParts []map[string]any
+					for _, img := range p.Images {
+						if img.Data != "" {
+							imgParts = append(imgParts, map[string]any{"inlineData": map[string]any{"mimeType": img.MediaType, "data": img.Data}})
+						} else if img.URL != "" {
+							imgParts = append(imgParts, map[string]any{"fileData": map[string]any{"mimeType": img.MediaType, "fileUri": img.URL}})
+						}
+					}
+					if len(imgParts) > 0 {
+						res["parts"] = imgParts
+					}
+				}
 				parts = append(parts, map[string]any{"functionResponse": res})
 			}
 			// thinking isn't sent back: its signatures belong to whoever
@@ -99,7 +112,31 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		if len(parts) == 0 {
 			continue
 		}
-		if n := len(contents); n > 0 && contents[n-1]["role"] == role {
+		isResultTurn := false
+		for _, p := range parts {
+			if _, ok := p["functionResponse"]; ok {
+				isResultTurn = true
+				break
+			}
+		}
+		// Reason: On Antigravity Gemini, tool results form an independent role=model content,
+		// whereas Claude uses an independent role=user content.
+		if isResultTurn && ag && !claude {
+			role = "model"
+		}
+		prevHasCall := false
+		if n := len(contents); n > 0 {
+			if prevParts, ok := contents[n-1]["parts"].([]map[string]any); ok {
+				for _, pp := range prevParts {
+					if _, ok := pp["functionCall"]; ok {
+						prevHasCall = true
+						break
+					}
+				}
+			}
+		}
+		// Never merge functionResponse into previous functionCall content
+		if n := len(contents); n > 0 && contents[n-1]["role"] == role && (!isResultTurn || !prevHasCall) && (!ag || !isResultTurn || role != "model") {
 			contents[n-1]["parts"] = append(contents[n-1]["parts"].([]map[string]any), parts...)
 			continue
 		}
