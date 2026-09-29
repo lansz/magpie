@@ -1,8 +1,48 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 )
+
+// rawPart models an opaque native response part from Antigravity.
+type rawPart struct {
+	Text             string       `json:"text,omitempty"`
+	Thought          bool         `json:"thought,omitempty"`
+	ThoughtSignature string       `json:"thoughtSignature,omitempty"`
+	FunctionCall     *rawFuncCall `json:"functionCall,omitempty"`
+	FunctionResponse *rawFuncResp `json:"functionResponse,omitempty"`
+}
+
+type rawFuncCall struct {
+	ID   string          `json:"id,omitempty"`
+	Name string          `json:"name,omitempty"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+type rawFuncResp struct {
+	ID       string          `json:"id,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Response json.RawMessage `json:"response,omitempty"`
+}
+
+type rawContent struct {
+	Role  string    `json:"role"`
+	Parts []rawPart `json:"parts"`
+}
+
+// canonicalPart models the expected normalized Antigravity part representation.
+type canonicalPart struct {
+	Kind             Kind   `json:"kind"` // Thinking, Text, ToolCall, ToolResult
+	Text             string `json:"text,omitempty"`
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+	CallID           string `json:"callId,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Args             string `json:"args,omitempty"`
+}
 
 // canonicalizeAntigravityParts normalizes native raw parts into canonical representations
 // according to model-specific signature and thought rules.
@@ -155,4 +195,47 @@ func canonicalizeAntigravityParts(model string, raw []rawPart) []canonicalPart {
 	}
 
 	return out
+}
+
+// jsonEqualExact performs exact semantic JSON comparison with sorted keys and number preservation.
+func jsonEqualExact(a, b []byte) (bool, error) {
+	if !json.Valid(a) {
+		return false, fmt.Errorf("invalid json in first value")
+	}
+	if !json.Valid(b) {
+		return false, fmt.Errorf("invalid json in second value")
+	}
+
+	var valA, valB any
+
+	decA := json.NewDecoder(bytes.NewReader(a))
+	decA.UseNumber()
+	if err := decA.Decode(&valA); err != nil {
+		return false, fmt.Errorf("invalid json in first value: %w", err)
+	}
+	var extraA any
+	if err := decA.Decode(&extraA); err != io.EOF {
+		return false, fmt.Errorf("first value contains trailing data or multiple JSON values")
+	}
+
+	decB := json.NewDecoder(bytes.NewReader(b))
+	decB.UseNumber()
+	if err := decB.Decode(&valB); err != nil {
+		return false, fmt.Errorf("invalid json in second value: %w", err)
+	}
+	var extraB any
+	if err := decB.Decode(&extraB); err != io.EOF {
+		return false, fmt.Errorf("second value contains trailing data or multiple JSON values")
+	}
+
+	normA, err := json.Marshal(valA)
+	if err != nil {
+		return false, err
+	}
+	normB, err := json.Marshal(valB)
+	if err != nil {
+		return false, err
+	}
+
+	return bytes.Equal(normA, normB), nil
 }
