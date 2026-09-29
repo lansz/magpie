@@ -1236,9 +1236,23 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		msg := p.Name + " did not stream: " + provider.APIError(b, "unexpected reply")
 		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
+	isAg := p.Account != nil && p.Account.Agent == "antigravity"
+	var agSessionRef string
+	var agScope antigravitySessionScope
+	if isAg {
+		agSessionRef = extractSessionReference(breq.clientProfile, r.Header, body)
+		agScope = antigravitySessionScope{
+			Caller:  breq.clientProfile,
+			Account: p.Account.User,
+			Project: p.Account.Project,
+			Model:   model,
+		}
+	}
+
 	if stream {
 		enc := encoder(breq.sourceProto, newSSEWriter(w), breq.Model)
 		var failed string
+		var agBufferedParts []canonicalPart
 		serr := readSSE(rd, func(_, data string) error {
 			return dec(data, func(ev Event) {
 				switch ev.Kind {
@@ -1246,8 +1260,27 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 					failed = ev.Text
 				case KStart, KUsage:
 					u.add(ev.Usage)
+				case KText:
+					if isAg {
+						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Text, Text: ev.Text})
+					}
+				case KThink:
+					if isAg {
+						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Thinking, Text: ev.Text})
+					}
+				case KStop:
+					// Reason: B15 requires atomic commit before normal client completion is signaled.
+					if isAg && failed == "" {
+						if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, nil); err != nil {
+							failed = "storage commit failed: " + err.Error()
+							enc.event(Event{Kind: KError, Text: failed})
+							return
+						}
+					}
 				}
-				enc.event(ev)
+				if failed == "" || ev.Kind == KError {
+					enc.event(ev)
+				}
 			})
 		})
 		if serr != nil && failed == "" {
@@ -1274,6 +1307,16 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	}
 	res2 := col.finish()
 	u.add(res2.Usage)
+	if isAg {
+		var parts []canonicalPart
+		for _, part := range res2.Parts {
+			parts = append(parts, canonicalPart{Kind: part.Kind, Text: part.Text})
+		}
+		if err := commitAntigravityRound(agScope, agSessionRef, parts, nil); err != nil {
+			msg := "storage commit failed: " + err.Error()
+			return writeError(w, breq.sourceProto, 503, msg), msg
+		}
+	}
 	out := render(breq.sourceProto, res2, breq.Model)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
