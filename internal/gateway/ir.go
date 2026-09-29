@@ -97,6 +97,7 @@ type Request struct {
 	Stream             bool
 	Effort             string // low | medium | high | xhigh | max, when the client asked
 	Thinking           bool   // the client asked for visible reasoning
+	ThinkingBudget     int    // explicit thinking budget tokens requested
 	NoThinking         bool   // the client turned thinking off, as against not saying
 	Parallel           *bool  // parallel tool calls allowed
 	WebSearch          bool   // the client offered its provider's own web search
@@ -223,6 +224,10 @@ func (c *collector) add(ev Event) {
 	case KSig:
 		if p := c.last(Thinking); p != nil {
 			p.Signature += ev.Text
+		} else if p := c.last(Text); p != nil {
+			p.Signature += ev.Text
+		} else if p := c.last(ToolCall); p != nil {
+			p.Signature += ev.Text
 		}
 	case KToolStart:
 		c.closeTool()
@@ -233,7 +238,11 @@ func (c *collector) add(ev Event) {
 		c.closeTool()
 		c.res.Stop = ev.Stop
 	case KUsage:
-		c.res.Usage.add(ev.Usage)
+		if c.res.Stop != "" && ev.Usage.Input > 0 {
+			c.res.Usage = ev.Usage
+		} else {
+			c.res.Usage.add(ev.Usage)
+		}
 	case KError:
 		c.err = ev.Text
 	case KSearch:

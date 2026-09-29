@@ -1198,6 +1198,26 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		if err := validateAntigravityStrictMode(r.Header, request); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
+		knownCalls := map[string]bool{}
+		for _, m := range request.Messages {
+			for _, part := range m.Parts {
+				if part.Kind == ToolCall && part.ID != "" {
+					knownCalls[part.ID] = true
+				}
+			}
+		}
+		for i, m := range request.Messages {
+			for j, part := range m.Parts {
+				if part.Kind == ToolResult && part.CallID != "" {
+					if !knownCalls[part.CallID] {
+						if _, ok := defaultToolBindingStore.LookupByClientID(part.CallID); !ok {
+							msg := fmt.Sprintf("orphan tool_result at messages[%d].parts[%d]: unknown tool_use_id %q", i, j, part.CallID)
+							return writeError(w, from, 400, msg), msg
+						}
+					}
+				}
+			}
+		}
 	}
 	breq := newBridgeRequest(request, from, profile)
 	if breq.WebSearch && !searching(r.Context()) {
@@ -1264,6 +1284,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		enc := encoder(breq.sourceProto, newSSEWriter(w), breq.Model)
 		var failed string
 		var agBufferedParts []canonicalPart
+		var agBufferedBindings []AntigravityToolBinding
+		var agPendingToolEvents []Event
+		var currentCallID, currentCallName string
+		var currentCallArgs strings.Builder
+		sawStop := false
+
 		serr := readSSE(rd, func(_, data string) error {
 			if r.Context().Err() != nil {
 				failed = r.Context().Err().Error()
@@ -1280,15 +1306,32 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 				case KStart, KUsage:
 					u.add(ev.Usage)
 				case KToolStart:
-					// Reason: B19 requires aborting undeclared tool calls from model as protocol errors.
-					if isAg && !declaredTools[ev.Name] {
-						failed = "undeclared tool call from model: " + ev.Name
-						enc.event(Event{Kind: KError, Text: failed})
+					if isAg {
+						if breq.Request.ToolChoice == "none" || !declaredTools[ev.Name] {
+							failed = "undeclared tool call from model: " + ev.Name
+							enc.event(Event{Kind: KError, Text: failed})
+							return
+						}
+						currentCallID = ev.ID
+						currentCallName = ev.Name
+						currentCallArgs.Reset()
+						agPendingToolEvents = append(agPendingToolEvents, ev)
 						return
 					}
 				case KToolArgs:
 					if failed != "" {
 						return
+					}
+					if isAg {
+						currentCallArgs.WriteString(ev.Text)
+						agPendingToolEvents = append(agPendingToolEvents, ev)
+						return
+					}
+				case KSig:
+					if isAg {
+						if len(agBufferedParts) > 0 && (agBufferedParts[len(agBufferedParts)-1].Kind == Text || agBufferedParts[len(agBufferedParts)-1].Kind == Thinking) {
+							agBufferedParts[len(agBufferedParts)-1].ThoughtSignature = ev.Text
+						}
 					}
 				case KText:
 					if isAg {
@@ -1299,13 +1342,41 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Thinking, Text: ev.Text})
 					}
 				case KStop:
-					// Reason: B15 requires atomic commit before normal client completion is signaled.
-					if isAg && failed == "" && r.Context().Err() == nil {
-						if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, nil); err != nil {
-							failed = "storage commit failed: " + err.Error()
-							enc.event(Event{Kind: KError, Text: failed})
-							return
+					sawStop = true
+					if isAg {
+						if currentCallID != "" {
+							argsStr := currentCallArgs.String()
+							if strings.TrimSpace(argsStr) == "" {
+								argsStr = "{}"
+							}
+							cPart := canonicalPart{
+								Kind:   ToolCall,
+								CallID: currentCallID,
+								Name:   currentCallName,
+								Args:   argsStr,
+							}
+							agBufferedParts = append(agBufferedParts, cPart)
+							agBufferedBindings = append(agBufferedBindings, AntigravityToolBinding{
+								NativeID:   currentCallID,
+								NativeName: currentCallName,
+								NativeArgs: json.RawMessage(argsStr),
+								ClientID:   currentCallID,
+								ClientName: currentCallName,
+							})
+							currentCallID = ""
 						}
+						// Reason: B15 requires atomic commit before normal client completion is signaled.
+						if failed == "" && r.Context().Err() == nil {
+							if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, agBufferedBindings); err != nil {
+								failed = "storage commit failed: " + err.Error()
+								enc.event(Event{Kind: KError, Text: failed})
+								return
+							}
+						}
+						for _, pev := range agPendingToolEvents {
+							enc.event(pev)
+						}
+						agPendingToolEvents = nil
 					}
 				}
 				if failed == "" || ev.Kind == KError {
@@ -1319,25 +1390,43 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			failed = p.Name + ": " + serr.Error()
 			enc.event(Event{Kind: KError, Text: failed})
 		}
+		if isAg && !sawStop && failed == "" {
+			failed = "upstream stream ended without finish reason"
+			enc.event(Event{Kind: KError, Text: failed})
+		}
 		if failed == "" {
 			enc.finish()
 		}
 		return 200, failed
 	}
 	var col collector
+	sawStopNonStream := false
 	if err := readSSE(rd, func(_, data string) error {
-		return dec(data, col.add)
+		return dec(data, func(ev Event) {
+			if ev.Kind == KStop {
+				sawStopNonStream = true
+			}
+			col.add(ev)
+		})
 	}); err != nil {
 		// a partial answer is not an answer
 		msg := p.Name + ": " + err.Error()
 		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
-	if col.err != "" && len(col.res.Parts) == 0 {
+	if col.err != "" {
 		return writeError(w, breq.sourceProto, 502, p.Name+": "+col.err), col.err
+	}
+	if isAg && !sawStopNonStream {
+		msg := "upstream response ended without finish reason"
+		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
 	res2 := col.finish()
 	u.add(res2.Usage)
 	if isAg {
+		if breq.Request.ToolChoice == "none" && hasTool(res2.Parts) {
+			msg := "tool_choice=none violated by model tool call"
+			return writeError(w, breq.sourceProto, 502, msg), msg
+		}
 		for _, part := range res2.Parts {
 			if part.Kind == ToolCall && !declaredTools[part.Name] {
 				msg := "undeclared tool call from model: " + part.Name
@@ -1345,12 +1434,46 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			}
 		}
 		var parts []canonicalPart
+		var bindings []AntigravityToolBinding
 		for _, part := range res2.Parts {
-			parts = append(parts, canonicalPart{Kind: part.Kind, Text: part.Text})
+			cPart := canonicalPart{
+				Kind:             part.Kind,
+				Text:             part.Text,
+				CallID:           part.ID,
+				Name:             part.Name,
+				Args:             argsString(part),
+				ThoughtSignature: part.Signature,
+			}
+			parts = append(parts, cPart)
+			if part.Kind == ToolCall {
+				bindings = append(bindings, AntigravityToolBinding{
+					NativeID:        part.ID,
+					NativeName:      part.Name,
+					NativeArgs:      argsOf(part),
+					NativeSignature: part.Signature,
+					ClientID:        part.ID,
+					ClientName:      part.Name,
+				})
+			}
 		}
-		if err := commitAntigravityRound(agScope, agSessionRef, parts, nil); err != nil {
+		if err := commitAntigravityRound(agScope, agSessionRef, parts, bindings); err != nil {
 			msg := "storage commit failed: " + err.Error()
 			return writeError(w, breq.sourceProto, 503, msg), msg
+		}
+		if breq.sourceProto == provider.Responses {
+			respID := res2.ID
+			if respID == "" {
+				respID = newID()
+			}
+			if !strings.HasPrefix(respID, "resp_") {
+				respID = "resp_" + respID
+			}
+			res2.ID = respID
+			fullMsgs := append(slices.Clone(breq.Request.Messages), Message{
+				Role:  "assistant",
+				Parts: res2.Parts,
+			})
+			defaultAntigravityParentStore.StoreParent(agScope, respID, agSessionRef, fullMsgs)
 		}
 	}
 	out := render(breq.sourceProto, res2, breq.Model)

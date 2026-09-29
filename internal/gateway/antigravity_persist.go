@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,11 +31,21 @@ type fileAntigravityPersister struct {
 	baseDir string
 }
 
-func newFileAntigravityPersister(baseDir string) *fileAntigravityPersister {
-	if baseDir == "" {
-		baseDir = filepath.Join(os.Getenv("XDG_CACHE_HOME"), "antigravity_rounds")
+func (p *fileAntigravityPersister) dir() string {
+	if p.baseDir != "" {
+		_ = os.MkdirAll(p.baseDir, 0700)
+		return p.baseDir
 	}
-	_ = os.MkdirAll(baseDir, 0755)
+	d := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "antigravity_rounds")
+	if os.Getenv("XDG_CACHE_HOME") == "" {
+		home, _ := os.UserHomeDir()
+		d = filepath.Join(home, ".cache", "antigravity_rounds")
+	}
+	_ = os.MkdirAll(d, 0700)
+	return d
+}
+
+func newFileAntigravityPersister(baseDir string) *fileAntigravityPersister {
 	return &fileAntigravityPersister{baseDir: baseDir}
 }
 
@@ -50,15 +62,13 @@ func (p *fileAntigravityPersister) CommitRoundWithRevision(scope antigravitySess
 		return nil
 	}
 
-	destName := filepath.Join(p.baseDir, sanitizeFilename(key)+".json")
+	destName := filepath.Join(p.dir(), sanitizeFilename(key)+".json")
 
 	// Optimistic concurrency check: stale revision cannot overwrite newer state
-	if revision > 0 {
-		if data, err := os.ReadFile(destName); err == nil {
-			var existing persistedRound
-			if json.Unmarshal(data, &existing) == nil && existing.Revision >= revision {
-				return fmt.Errorf("revision conflict on session %q: current revision %d >= proposed revision %d", sessionRef, existing.Revision, revision)
-			}
+	if data, err := os.ReadFile(destName); err == nil {
+		var existing persistedRound
+		if json.Unmarshal(data, &existing) == nil && existing.Revision > 0 && existing.Revision >= revision {
+			return fmt.Errorf("revision conflict on session %q: current revision %d >= proposed revision %d", sessionRef, existing.Revision, revision)
 		}
 	}
 
@@ -76,7 +86,7 @@ func (p *fileAntigravityPersister) CommitRoundWithRevision(scope antigravitySess
 	}
 
 	// Atomic write using temp file and rename
-	tmpFile, err := os.CreateTemp(p.baseDir, "round_*.tmp")
+	tmpFile, err := os.CreateTemp(p.dir(), "round_*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create round temp file: %w", err)
 	}
@@ -108,7 +118,7 @@ func (p *fileAntigravityPersister) LoadRound(scope antigravitySessionScope, sess
 		return nil, os.ErrNotExist
 	}
 
-	destName := filepath.Join(p.baseDir, sanitizeFilename(key)+".json")
+	destName := filepath.Join(p.dir(), sanitizeFilename(key)+".json")
 	data, err := os.ReadFile(destName)
 	if err != nil {
 		return nil, err
@@ -118,20 +128,15 @@ func (p *fileAntigravityPersister) LoadRound(scope antigravitySessionScope, sess
 	if err := json.Unmarshal(data, &round); err != nil {
 		return nil, fmt.Errorf("corrupted session record: invalid json in %s: %w", destName, err)
 	}
+	if round.Scope != scope || round.Session != sessionRef {
+		return nil, os.ErrNotExist
+	}
 	return &round, nil
 }
 
 func sanitizeFilename(s string) string {
-	var b []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
-			b = append(b, c)
-		} else {
-			b = append(b, '_')
-		}
-	}
-	return string(b)
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 var currentAntigravityPersister antigravityPersister = newFileAntigravityPersister("")
@@ -142,23 +147,51 @@ func commitAntigravityRoundWithPersister(scope antigravitySessionScope, sessionR
 		persister = currentAntigravityPersister
 	}
 
-	// 1. Stage tool bindings
+	// 1. Stage tool bindings with snapshot for atomic rollback
+	var snapClient map[string]*AntigravityToolBinding
+	var snapNative map[string]*AntigravityToolBinding
+	var snapName map[string]string
 	if len(bindings) > 0 {
+		defaultToolBindingStore.RLock()
+		snapClient = make(map[string]*AntigravityToolBinding, len(defaultToolBindingStore.byClient))
+		for k, v := range defaultToolBindingStore.byClient {
+			snapClient[k] = v
+		}
+		snapNative = make(map[string]*AntigravityToolBinding, len(defaultToolBindingStore.byNative))
+		for k, v := range defaultToolBindingStore.byNative {
+			snapNative[k] = v
+		}
+		snapName = make(map[string]string, len(defaultToolBindingStore.byClientName))
+		for k, v := range defaultToolBindingStore.byClientName {
+			snapName[k] = v
+		}
+		defaultToolBindingStore.RUnlock()
+
 		if err := defaultToolBindingStore.Bind(bindings...); err != nil {
 			return err
 		}
 	}
 
+	rev := 1
+	if sessionRef != "" {
+		if rec, ok := defaultAntigravityLedger.Lookup(scope, sessionRef); ok && rec.TurnCount > 0 {
+			rev = rec.TurnCount + 1
+		}
+		if existing, err := persister.LoadRound(scope, sessionRef); err == nil && existing != nil {
+			if existing.Revision >= rev {
+				rev = existing.Revision + 1
+			}
+		}
+	}
+
 	// 2. Commit round to persistent storage
-	if err := persister.CommitRound(scope, sessionRef, canonical, bindings); err != nil {
-		// Roll back staged bindings on storage failure (atomic rollback)
+	if err := persister.CommitRoundWithRevision(scope, sessionRef, canonical, bindings, rev); err != nil {
+		// Roll back staged bindings on storage failure (restore previous snapshot)
 		if len(bindings) > 0 {
 			defaultToolBindingStore.Lock()
-			for _, b := range bindings {
-				delete(defaultToolBindingStore.byClient, b.ClientID)
-				delete(defaultToolBindingStore.byNative, b.NativeID)
-				delete(defaultToolBindingStore.byClientName, b.ClientName)
-			}
+			defaultToolBindingStore.byClient = snapClient
+			defaultToolBindingStore.byNative = snapNative
+			defaultToolBindingStore.byClientName = snapName
 			defaultToolBindingStore.Unlock()
 		}
 		return err
@@ -169,6 +202,7 @@ func commitAntigravityRoundWithPersister(scope antigravitySessionScope, sessionR
 		defaultAntigravityLedger.Store(scope, sessionRef, &antigravityLedgerRecord{
 			SessionID: sessionRef,
 			Scope:     scope,
+			TurnCount: rev,
 			Data: map[string]any{
 				"history": canonical,
 			},

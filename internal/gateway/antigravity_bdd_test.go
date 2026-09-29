@@ -32,4 +32,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B19_MalformedToolAndBrokenFrame", testB19MalformedToolAndBrokenFrame)
 	t.Run("B20_Cancellation", testB20Cancellation)
 	t.Run("B21_ModesAndNonTarget", testB21ModesAndNonTarget)
+	t.Run("B22_AuditFindings", testB22AuditFindings)
 }

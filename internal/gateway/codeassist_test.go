@@ -86,7 +86,7 @@ func TestBuildCodeAssistForAntigravity(t *testing.T) {
 	}
 	decl := env.Request["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)
 	params, _ := json.Marshal(decl["parameters"])
-	want := `{"properties":{"mode":{"enum":["r"]},"n":{"nullable":true,"type":"integer"},"opts":{"properties":{"deep":{"type":"boolean"}},"type":"object"},"path":{"nullable":true,"type":"string"}},"required":["path"],"type":"object"}`
+	want := `{"additionalProperties":false,"properties":{"mode":{"enum":["r"]},"n":{"nullable":true,"type":"integer"},"opts":{"properties":{"deep":{"type":"boolean"}},"type":"object"},"path":{"nullable":true,"type":"string"}},"required":["path"],"type":"object"}`
 	if string(params) != want {
 		t.Errorf("parameters =\n%s\nwant\n%s", params, want)
 	}
@@ -119,7 +119,7 @@ func TestCodeAssistDecoder(t *testing.T) {
 	} {
 		d.decode(line, func(ev Event) { got = append(got, ev) })
 	}
-	kinds := []EventKind{KStart, KThink, KText, KToolStart, KToolArgs, KStop, KUsage}
+	kinds := []EventKind{KStart, KThink, KText, KToolStart, KToolArgs, KSig, KStop, KUsage}
 	if len(got) != len(kinds) {
 		t.Fatalf("events = %+v", got)
 	}
@@ -131,10 +131,10 @@ func TestCodeAssistDecoder(t *testing.T) {
 	if got[0].Model != "gemini-2.5-pro" || got[3].Name != "read" || got[3].ID == "" || got[4].Text != `{"path":"a"}` {
 		t.Errorf("events = %+v", got)
 	}
-	if got[5].Stop != "tool" {
-		t.Errorf("stop = %q", got[5].Stop)
+	if got[6].Stop != "tool" {
+		t.Errorf("stop = %q", got[6].Stop)
 	}
-	if u := got[6].Usage; u != (Usage{Input: 60, CacheRead: 40, Output: 30, Reasoning: 20}) {
+	if u := got[7].Usage; u != (Usage{Input: 60, CacheRead: 40, Output: 30, Reasoning: 20}) {
 		t.Errorf("usage = %+v", u)
 	}
 

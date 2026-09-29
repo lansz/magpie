@@ -57,6 +57,11 @@ func (s *antigravityToolBindingStore) Bind(bindings ...AntigravityToolBinding) e
 		if !json.Valid(b.NativeArgs) {
 			return fmt.Errorf("binding[%d] native args is not valid JSON", i)
 		}
+		if existing, ok := s.byClient[b.ClientID]; ok {
+			if existing.NativeID != b.NativeID || existing.NativeName != b.NativeName {
+				return fmt.Errorf("binding collision for client ID %q", b.ClientID)
+			}
+		}
 	}
 
 	// 2. Atomic assignment

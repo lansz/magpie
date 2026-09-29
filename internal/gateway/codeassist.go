@@ -144,17 +144,30 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		if len(parts) == 0 {
 			continue
 		}
+		if ag && !claude && m.Role == "user" {
+			var frParts []map[string]any
+			var userParts []map[string]any
+			for _, p := range parts {
+				if _, ok := p["functionResponse"]; ok {
+					frParts = append(frParts, p)
+				} else {
+					userParts = append(userParts, p)
+				}
+			}
+			if len(frParts) > 0 {
+				contents = append(contents, map[string]any{"role": "model", "parts": frParts})
+			}
+			if len(userParts) > 0 {
+				contents = append(contents, map[string]any{"role": "user", "parts": userParts})
+			}
+			continue
+		}
 		isResultTurn := false
 		for _, p := range parts {
 			if _, ok := p["functionResponse"]; ok {
 				isResultTurn = true
 				break
 			}
-		}
-		// Reason: On Antigravity Gemini, tool results form an independent role=model content,
-		// whereas Claude uses an independent role=user content.
-		if isResultTurn && ag && !claude {
-			role = "model"
 		}
 		prevHasCall := false
 		if n := len(contents); n > 0 {
@@ -168,7 +181,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 			}
 		}
 		// Never merge functionResponse into previous functionCall content
-		if n := len(contents); n > 0 && contents[n-1]["role"] == role && (!isResultTurn || !prevHasCall) && (!ag || !isResultTurn || role != "model") {
+		if n := len(contents); n > 0 && contents[n-1]["role"] == role && (!isResultTurn || !prevHasCall) {
 			contents[n-1]["parts"] = append(contents[n-1]["parts"].([]map[string]any), parts...)
 			continue
 		}
@@ -182,7 +195,13 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 	if len(r.Tools) > 0 && r.ToolChoice != "none" {
 		var decls []map[string]any
 		for _, t := range r.Tools {
-			d := map[string]any{"name": t.Name}
+			name := t.Name
+			if ag {
+				if nativeName, ok := defaultToolBindingStore.LookupNativeName(t.Name); ok {
+					name = nativeName
+				}
+			}
+			d := map[string]any{"name": name}
 			if t.Description != "" {
 				d["description"] = t.Description
 			}
@@ -209,8 +228,6 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 			if ag {
 				if nativeName, ok := defaultToolBindingStore.LookupNativeName(targetName); ok {
 					targetName = nativeName
-				} else if binding, ok := defaultToolBindingStore.LookupByClientID(targetName); ok {
-					targetName = binding.NativeName
 				}
 			}
 			fc["allowedFunctionNames"] = []string{targetName}
@@ -289,7 +306,7 @@ func thinkingConfig(r *Request, model string, claude, ag bool) map[string]any {
 		}
 	}
 	tc := map[string]any{"includeThoughts": true}
-	if strings.HasPrefix(m, "gemini-3") || strings.HasPrefix(m, "gemini-pro-agent") {
+	if (strings.HasPrefix(m, "gemini-3") || strings.HasPrefix(m, "gemini-pro-agent")) && r.ThinkingBudget <= 0 {
 		if r.Effort != "" {
 			level := "high"
 			if r.Effort == "low" {
@@ -300,6 +317,9 @@ func thinkingConfig(r *Request, model string, claude, ag bool) map[string]any {
 		return tc
 	}
 	budget := budgetOf(effortOf(r.Effort))
+	if ag && r.ThinkingBudget > 0 {
+		budget = r.ThinkingBudget
+	}
 	if claude && r.MaxTokens > 0 && budget >= r.MaxTokens {
 		budget = r.MaxTokens - 1
 		if budget < 1024 {
@@ -408,9 +428,15 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 			out := map[string]any{}
 			for k, v := range x {
 				switch k {
-				case "$schema", "$defs", "definitions", "$id", "$comment", "additionalProperties", "format", "default",
+				case "$schema", "$defs", "definitions", "$id", "$comment", "format", "default",
 					"examples", "example", "title", "patternProperties", "enumDescriptions", "prefill", "deprecated",
 					"propertyNames", "unevaluatedProperties", "readOnly", "writeOnly", "const":
+				case "additionalProperties":
+					if b, ok := v.(bool); ok {
+						out[k] = b
+					} else if m, ok := v.(map[string]any); ok {
+						out[k] = walk(m, depth+1)
+					}
 				case "type":
 					if ts, ok := v.([]any); ok {
 						for _, t := range ts {
@@ -434,17 +460,8 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 				case "items":
 					out[k] = walk(v, depth+1)
 				case "enum":
-					// Google takes string enums only
 					if es, ok := v.([]any); ok {
-						strs := make([]any, 0, len(es))
-						for _, e := range es {
-							if s, ok := e.(string); ok {
-								strs = append(strs, s)
-							}
-						}
-						if len(strs) == len(es) {
-							out[k] = strs
-						}
+						out[k] = es
 					}
 				default:
 					out[k] = walk(v, depth+1)
@@ -541,6 +558,9 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 				d.tools = true
 				emit(Event{Kind: KToolStart, ID: id, Name: p.FunctionCall.Name})
 				emit(Event{Kind: KToolArgs, Text: string(args)})
+				if p.Signature != "" {
+					emit(Event{Kind: KSig, Text: p.Signature})
+				}
 			case p.Thought:
 				if p.Text != "" {
 					emit(Event{Kind: KThink, Text: p.Text})
@@ -550,6 +570,13 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 				}
 			case p.Text != "":
 				emit(Event{Kind: KText, Text: p.Text})
+				if p.Signature != "" {
+					emit(Event{Kind: KSig, Text: p.Signature})
+				}
+			default:
+				if p.Signature != "" {
+					emit(Event{Kind: KSig, Text: p.Signature})
+				}
 			}
 		}
 		if cand.FinishReason != "" && !d.stopped {

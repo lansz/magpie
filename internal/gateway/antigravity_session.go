@@ -301,13 +301,16 @@ func verifyCommittedHistory(scope antigravitySessionScope, committed []canonical
 				return fmt.Errorf("history tool call ID mismatch: committed %q != submitted %q", exp.CallID, act.CallID)
 			}
 			if exp.Args != "" {
-				actArgs := act.Args
-				if b, ok := defaultToolBindingStore.LookupByClientID(act.CallID); ok {
-					actArgs = string(b.NativeArgs)
-				}
-				match, err := jsonEqualExact([]byte(actArgs), []byte(exp.Args))
+				match, err := jsonEqualExact([]byte(act.Args), []byte(exp.Args))
 				if err != nil || !match {
-					return fmt.Errorf("history tool args tampered for call %q: committed %s != submitted %s", exp.CallID, exp.Args, act.Args)
+					if b, ok := defaultToolBindingStore.LookupByClientID(act.CallID); ok && len(b.ClientArgs) > 0 {
+						cm, _ := jsonEqualExact([]byte(act.Args), b.ClientArgs)
+						if !cm {
+							return fmt.Errorf("history tool args tampered for call %q: committed %s != submitted %s", exp.CallID, exp.Args, act.Args)
+						}
+					} else {
+						return fmt.Errorf("history tool args tampered for call %q: committed %s != submitted %s", exp.CallID, exp.Args, act.Args)
+					}
 				}
 			}
 		}

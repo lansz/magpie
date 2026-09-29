@@ -832,7 +832,7 @@ func (g googleAccount) quota(ctx context.Context, plan string) SubscriptionQuota
 
 // googleProvider is an app's Google account as a provider.
 func googleProvider(g googleAccount, plan string) Provider {
-	acct := &Account{Agent: g.app.agent, User: g.user, Plan: plan, Stream: true, codeAssist: g.app.base}
+	acct := &Account{Agent: g.app.agent, User: g.user, Plan: plan, Project: g.auth.Project, Stream: true, codeAssist: g.app.base}
 	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
 		tok, err := g.token(ctx)
 		if err != nil {
@@ -841,6 +841,9 @@ func googleProvider(g googleAccount, plan string) Provider {
 		p, err := g.project(ctx)
 		if err != nil {
 			return err
+		}
+		if acct.Project == "" {
+			acct.Project = p.id
 		}
 		out, model, err := codeAssistEnvelope(g.app.agent, body, p.id)
 		if err != nil {
@@ -870,7 +873,9 @@ func googleProvider(g googleAccount, plan string) Provider {
 // the app sends along.
 func codeAssistEnvelope(agent string, body []byte, project string) ([]byte, string, error) {
 	var env map[string]any
-	if err := json.Unmarshal(body, &env); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&env); err != nil {
 		return nil, "", err
 	}
 	model, _ := env["model"].(string)

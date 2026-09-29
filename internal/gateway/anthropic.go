@@ -142,6 +142,7 @@ func parseAnthropic(body []byte) (*Request, error) {
 	}
 	if th := a.Thinking; th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
 		r.Thinking = true
+		r.ThinkingBudget = th.BudgetTokens
 		r.Effort = effortOfBudget(th.BudgetTokens)
 		if oc := a.OutputConfig; oc != nil {
 			if e := effortOf(oc.Effort); e != "" {

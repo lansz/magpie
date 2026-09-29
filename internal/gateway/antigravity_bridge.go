@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // bridgeRequest wraps Request with protocol translation and client profile metadata.
@@ -244,23 +245,41 @@ func SetAntigravityMode(mode string) {
 func GetAntigravityMode() string {
 	antigravityModeMu.RLock()
 	defer antigravityModeMu.RUnlock()
-	return currentAntigravityMode
+	if currentAntigravityMode != AntigravityModeOff {
+		return currentAntigravityMode
+	}
+	switch strings.ToLower(settings.Load().AntigravityCompatibility) {
+	case "verified":
+		return AntigravityModeVerified
+	case "strict":
+		return AntigravityModeStrict
+	default:
+		return AntigravityModeOff
+	}
 }
 
 func effectiveAntigravityMode(in http.Header) string {
+	serverMode := GetAntigravityMode()
+	callerMode := ""
 	if in != nil {
 		if m := in.Get("X-Antigravity-Mode"); m != "" {
 			switch strings.ToLower(m) {
 			case "verified":
-				return AntigravityModeVerified
+				callerMode = AntigravityModeVerified
 			case "strict":
-				return AntigravityModeStrict
+				callerMode = AntigravityModeStrict
 			case "off":
-				return AntigravityModeOff
+				callerMode = AntigravityModeOff
 			}
 		}
 	}
-	return GetAntigravityMode()
+	if callerMode == AntigravityModeStrict || serverMode == AntigravityModeStrict {
+		return AntigravityModeStrict
+	}
+	if callerMode == AntigravityModeVerified || serverMode == AntigravityModeVerified {
+		return AntigravityModeVerified
+	}
+	return AntigravityModeOff
 }
 
 // validateAntigravityStrictMode checks whether requested capabilities have verified equivalent contracts.
