@@ -136,7 +136,15 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 			mode = "ANY"
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			mode = "ANY"
-			fc["allowedFunctionNames"] = []string{strings.TrimPrefix(r.ToolChoice, "name:")}
+			targetName := strings.TrimPrefix(r.ToolChoice, "name:")
+			if ag {
+				if nativeName, ok := defaultToolBindingStore.LookupNativeName(targetName); ok {
+					targetName = nativeName
+				} else if binding, ok := defaultToolBindingStore.LookupByClientID(targetName); ok {
+					targetName = binding.NativeName
+				}
+			}
+			fc["allowedFunctionNames"] = []string{targetName}
 		}
 		// Reason: Antigravity's official client sends automatic tool choice with
 		// no toolConfig at all, for Gemini and Claude alike

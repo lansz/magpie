@@ -20,19 +20,22 @@ type AntigravityToolBinding struct {
 
 type antigravityToolBindingStore struct {
 	sync.RWMutex
-	byClient map[string]*AntigravityToolBinding // key: clientID (or scoped key)
-	byNative map[string]*AntigravityToolBinding // key: nativeID (or scoped key)
+	byClient     map[string]*AntigravityToolBinding // key: clientID
+	byNative     map[string]*AntigravityToolBinding // key: nativeID
+	byClientName map[string]string                  // key: clientName -> nativeName
 }
 
 var defaultToolBindingStore = &antigravityToolBindingStore{
-	byClient: make(map[string]*AntigravityToolBinding),
-	byNative: make(map[string]*AntigravityToolBinding),
+	byClient:     make(map[string]*AntigravityToolBinding),
+	byNative:     make(map[string]*AntigravityToolBinding),
+	byClientName: make(map[string]string),
 }
 
 func (s *antigravityToolBindingStore) clear() {
 	s.Lock()
 	s.byClient = make(map[string]*AntigravityToolBinding)
 	s.byNative = make(map[string]*AntigravityToolBinding)
+	s.byClientName = make(map[string]string)
 	s.Unlock()
 }
 
@@ -58,21 +61,27 @@ func (s *antigravityToolBindingStore) Bind(bindings ...AntigravityToolBinding) e
 	// 2. Atomic assignment
 	newClient := make(map[string]*AntigravityToolBinding, len(s.byClient)+len(bindings))
 	newNative := make(map[string]*AntigravityToolBinding, len(s.byNative)+len(bindings))
+	newClientName := make(map[string]string, len(s.byClientName)+len(bindings))
 	for k, v := range s.byClient {
 		newClient[k] = v
 	}
 	for k, v := range s.byNative {
 		newNative[k] = v
 	}
+	for k, v := range s.byClientName {
+		newClientName[k] = v
+	}
 
 	for _, b := range bindings {
 		entry := b
 		newClient[b.ClientID] = &entry
 		newNative[b.NativeID] = &entry
+		newClientName[b.ClientName] = b.NativeName
 	}
 
 	s.byClient = newClient
 	s.byNative = newNative
+	s.byClientName = newClientName
 	return nil
 }
 
@@ -94,4 +103,14 @@ func (s *antigravityToolBindingStore) LookupByNativeID(nativeID string) (*Antigr
 	defer s.RUnlock()
 	b, ok := s.byNative[nativeID]
 	return b, ok
+}
+
+func (s *antigravityToolBindingStore) LookupNativeName(clientName string) (string, bool) {
+	if clientName == "" {
+		return "", false
+	}
+	s.RLock()
+	defer s.RUnlock()
+	native, ok := s.byClientName[clientName]
+	return native, ok
 }
