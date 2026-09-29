@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -213,4 +215,65 @@ func antigravityParallelBan(from provider.Protocol, r *Request) string {
 		field = "tool_choice.disable_parallel_tool_use"
 	}
 	return field + ": Antigravity cannot forbid parallel tool calls"
+}
+
+const (
+	AntigravityModeOff      = "off"
+	AntigravityModeVerified = "verified"
+	AntigravityModeStrict   = "strict"
+)
+
+var (
+	antigravityModeMu      sync.RWMutex
+	currentAntigravityMode = AntigravityModeOff
+)
+
+func SetAntigravityMode(mode string) {
+	antigravityModeMu.Lock()
+	defer antigravityModeMu.Unlock()
+	switch strings.ToLower(mode) {
+	case "verified":
+		currentAntigravityMode = AntigravityModeVerified
+	case "strict":
+		currentAntigravityMode = AntigravityModeStrict
+	default:
+		currentAntigravityMode = AntigravityModeOff
+	}
+}
+
+func GetAntigravityMode() string {
+	antigravityModeMu.RLock()
+	defer antigravityModeMu.RUnlock()
+	return currentAntigravityMode
+}
+
+func effectiveAntigravityMode(in http.Header) string {
+	if in != nil {
+		if m := in.Get("X-Antigravity-Mode"); m != "" {
+			switch strings.ToLower(m) {
+			case "verified":
+				return AntigravityModeVerified
+			case "strict":
+				return AntigravityModeStrict
+			case "off":
+				return AntigravityModeOff
+			}
+		}
+	}
+	return GetAntigravityMode()
+}
+
+// validateAntigravityStrictMode checks whether requested capabilities have verified equivalent contracts.
+func validateAntigravityStrictMode(in http.Header, r *Request) error {
+	mode := effectiveAntigravityMode(in)
+	if mode != AntigravityModeStrict || r == nil {
+		return nil
+	}
+	for _, t := range r.Tools {
+		name := strings.ToLower(t.Name)
+		if name == "generate_image" || name == "image_gen" || strings.Contains(name, "subagent") {
+			return fmt.Errorf("strict mode: capability %q lacks verified equivalent contract on Antigravity bridge", t.Name)
+		}
+	}
+	return nil
 }
