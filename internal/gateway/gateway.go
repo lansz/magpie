@@ -1189,15 +1189,69 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			Project: p.Account.Project,
 			Model:   model,
 		}
-		if err := validateAntigravitySessionResume(scope, r.Header, body, from); err != nil {
+		if err := validateAntigravityStrictMode(r.Header, request); err != nil {
+			return writeError(w, from, 400, err.Error()), err.Error()
+		}
+		if err := validateAntigravitySessionResume(scope, r.Header, body, from, request); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
 		if err := resolveAntigravityParentResponse(scope, request); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
-		if err := validateAntigravityStrictMode(r.Header, request); err != nil {
-			return writeError(w, from, 400, err.Error()), err.Error()
+		agSessionRef := extractSessionReference(profile, r.Header, body)
+		baseRev := 0
+		if agSessionRef != "" {
+			if rec, ok := defaultAntigravityLedger.Lookup(scope, agSessionRef); ok {
+				baseRev = rec.TurnCount
+			}
+			if currentAntigravityPersister != nil {
+				if existing, err := currentAntigravityPersister.LoadRound(scope, agSessionRef); err == nil && existing != nil {
+					if existing.Revision > baseRev {
+						baseRev = existing.Revision
+					}
+				}
+			}
 		}
+		request.Scope = scope
+		request.SessionRef = agSessionRef
+		request.BaseRevision = baseRev
+
+		// Validate pairing between assistant tool_calls and user tool_results
+		for i := 0; i < len(request.Messages)-1; i++ {
+			m := request.Messages[i]
+			if m.Role == "assistant" {
+				var callIDs []string
+				for _, part := range m.Parts {
+					if part.Kind == ToolCall && part.ID != "" {
+						callIDs = append(callIDs, part.ID)
+					}
+				}
+				if len(callIDs) > 0 && i+1 < len(request.Messages) && request.Messages[i+1].Role == "user" {
+					userMsg := request.Messages[i+1]
+					seenResults := map[string]bool{}
+					for j, part := range userMsg.Parts {
+						if part.Kind == ToolResult {
+							if strings.TrimSpace(part.CallID) == "" {
+								msg := fmt.Sprintf("messages[%d].parts[%d]: empty tool_use_id in tool_result", i+1, j)
+								return writeError(w, from, 400, msg), msg
+							}
+							if seenResults[part.CallID] {
+								msg := fmt.Sprintf("messages[%d].parts[%d]: duplicate tool_result for call %q", i+1, j, part.CallID)
+								return writeError(w, from, 400, msg), msg
+							}
+							seenResults[part.CallID] = true
+						}
+					}
+					for _, cid := range callIDs {
+						if !seenResults[cid] {
+							msg := fmt.Sprintf("messages[%d]: missing tool_result for call %q", i+1, cid)
+							return writeError(w, from, 400, msg), msg
+						}
+					}
+				}
+			}
+		}
+
 		knownCalls := map[string]bool{}
 		for _, m := range request.Messages {
 			for _, part := range m.Parts {
@@ -1208,9 +1262,13 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		}
 		for i, m := range request.Messages {
 			for j, part := range m.Parts {
-				if part.Kind == ToolResult && part.CallID != "" {
+				if part.Kind == ToolResult {
+					if strings.TrimSpace(part.CallID) == "" {
+						msg := fmt.Sprintf("messages[%d].parts[%d]: empty tool_use_id in tool_result", i, j)
+						return writeError(w, from, 400, msg), msg
+					}
 					if !knownCalls[part.CallID] {
-						if _, ok := defaultToolBindingStore.LookupByClientID(part.CallID); !ok {
+						if _, ok := defaultToolBindingStore.LookupByClientIDScoped(scope, part.CallID); !ok {
 							msg := fmt.Sprintf("orphan tool_result at messages[%d].parts[%d]: unknown tool_use_id %q", i, j, part.CallID)
 							return writeError(w, from, 400, msg), msg
 						}
@@ -1263,32 +1321,38 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	declaredTools := map[string]bool{}
 	for _, t := range breq.Request.Tools {
 		declaredTools[t.Name] = true
-		if nativeName, ok := defaultToolBindingStore.LookupNativeName(t.Name); ok {
+		if nativeName, ok := defaultToolBindingStore.LookupNativeNameScoped(breq.Request.Scope, t.Name); ok {
 			declaredTools[nativeName] = true
 		}
 	}
-
-	var agSessionRef string
-	var agScope antigravitySessionScope
-	if isAg {
-		agSessionRef = extractSessionReference(breq.clientProfile, r.Header, body)
-		agScope = antigravitySessionScope{
-			Caller:  breq.clientProfile,
-			Account: p.Account.User,
-			Project: p.Account.Project,
-			Model:   model,
+	isNamedChoice := strings.HasPrefix(breq.Request.ToolChoice, "name:")
+	expectedNamedTool := strings.TrimPrefix(breq.Request.ToolChoice, "name:")
+	if isAg && isNamedChoice {
+		if nativeName, ok := defaultToolBindingStore.LookupNativeNameScoped(breq.Request.Scope, expectedNamedTool); ok {
+			expectedNamedTool = nativeName
 		}
+	}
+
+	agSessionRef := breq.Request.SessionRef
+	agScope := breq.Request.Scope
+
+	type streamToolCall struct {
+		id        string
+		name      string
+		args      strings.Builder
+		signature string
 	}
 
 	if stream {
 		enc := encoder(breq.sourceProto, newSSEWriter(w), breq.Model)
 		var failed string
 		var agBufferedParts []canonicalPart
-		var agBufferedBindings []AntigravityToolBinding
+		var agPendingCalls []*streamToolCall
 		var agPendingToolEvents []Event
-		var currentCallID, currentCallName string
-		var currentCallArgs strings.Builder
+		var streamRespID string
 		sawStop := false
+		sawThoughtSig := false
+		sawSemanticAfterSig := false
 
 		serr := readSSE(rd, func(_, data string) error {
 			if r.Context().Err() != nil {
@@ -1303,18 +1367,34 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 				switch ev.Kind {
 				case KError:
 					failed = ev.Text
-				case KStart, KUsage:
+				case KStart:
+					if ev.MsgID == "" {
+						streamRespID = "resp_" + newID()
+						ev.MsgID = streamRespID
+					} else {
+						streamRespID = ev.MsgID
+						if !strings.HasPrefix(streamRespID, "resp_") {
+							streamRespID = "resp_" + streamRespID
+						}
+					}
 					u.add(ev.Usage)
+				case KUsage:
+					*u = ev.Usage
 				case KToolStart:
 					if isAg {
+						sawSemanticAfterSig = true
 						if breq.Request.ToolChoice == "none" || !declaredTools[ev.Name] {
 							failed = "undeclared tool call from model: " + ev.Name
 							enc.event(Event{Kind: KError, Text: failed})
 							return
 						}
-						currentCallID = ev.ID
-						currentCallName = ev.Name
-						currentCallArgs.Reset()
+						if isNamedChoice && ev.Name != expectedNamedTool {
+							failed = "named tool choice constraint violated: expected " + expectedNamedTool + ", got " + ev.Name
+							enc.event(Event{Kind: KError, Text: failed})
+							return
+						}
+						call := &streamToolCall{id: ev.ID, name: ev.Name}
+						agPendingCalls = append(agPendingCalls, call)
 						agPendingToolEvents = append(agPendingToolEvents, ev)
 						return
 					}
@@ -1323,60 +1403,69 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 						return
 					}
 					if isAg {
-						currentCallArgs.WriteString(ev.Text)
+						if len(agPendingCalls) > 0 {
+							agPendingCalls[len(agPendingCalls)-1].args.WriteString(ev.Text)
+						}
 						agPendingToolEvents = append(agPendingToolEvents, ev)
 						return
 					}
 				case KSig:
 					if isAg {
-						if len(agBufferedParts) > 0 && (agBufferedParts[len(agBufferedParts)-1].Kind == Text || agBufferedParts[len(agBufferedParts)-1].Kind == Thinking) {
+						if len(agPendingCalls) > 0 {
+							agPendingCalls[len(agPendingCalls)-1].signature = ev.Text
+						} else if len(agBufferedParts) > 0 && (agBufferedParts[len(agBufferedParts)-1].Kind == Text || agBufferedParts[len(agBufferedParts)-1].Kind == Thinking) {
 							agBufferedParts[len(agBufferedParts)-1].ThoughtSignature = ev.Text
 						}
 					}
 				case KText:
 					if isAg {
+						sawSemanticAfterSig = true
 						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Text, Text: ev.Text})
+						if len(agPendingCalls) > 0 {
+							agPendingToolEvents = append(agPendingToolEvents, ev)
+							return
+						}
 					}
 				case KThink:
 					if isAg {
-						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Thinking, Text: ev.Text})
+						if ev.Text != "" {
+							agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Thinking, Text: ev.Text})
+						}
+						if strings.Contains(strings.ToLower(model), "claude") {
+							sawThoughtSig = true
+						}
+						if len(agPendingCalls) > 0 {
+							agPendingToolEvents = append(agPendingToolEvents, ev)
+							return
+						}
 					}
 				case KStop:
 					sawStop = true
 					if isAg {
-						if currentCallID != "" {
-							argsStr := currentCallArgs.String()
-							if strings.TrimSpace(argsStr) == "" {
+						if strings.Contains(strings.ToLower(model), "claude") && sawThoughtSig && !sawSemanticAfterSig {
+							failed = "pending signature with no target"
+							enc.event(Event{Kind: KError, Text: failed})
+							return
+						}
+						for _, c := range agPendingCalls {
+							argsStr := strings.TrimSpace(c.args.String())
+							if argsStr == "" {
 								argsStr = "{}"
 							}
-							cPart := canonicalPart{
-								Kind:   ToolCall,
-								CallID: currentCallID,
-								Name:   currentCallName,
-								Args:   argsStr,
-							}
-							agBufferedParts = append(agBufferedParts, cPart)
-							agBufferedBindings = append(agBufferedBindings, AntigravityToolBinding{
-								NativeID:   currentCallID,
-								NativeName: currentCallName,
-								NativeArgs: json.RawMessage(argsStr),
-								ClientID:   currentCallID,
-								ClientName: currentCallName,
-							})
-							currentCallID = ""
-						}
-						// Reason: B15 requires atomic commit before normal client completion is signaled.
-						if failed == "" && r.Context().Err() == nil {
-							if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, agBufferedBindings); err != nil {
-								failed = "storage commit failed: " + err.Error()
+							if !strings.HasPrefix(argsStr, "{") || !json.Valid([]byte(argsStr)) {
+								failed = "invalid tool call arguments from model: must be json object"
 								enc.event(Event{Kind: KError, Text: failed})
 								return
 							}
+							cPart := canonicalPart{
+								Kind:             ToolCall,
+								CallID:           c.id,
+								Name:             c.name,
+								Args:             argsStr,
+								ThoughtSignature: c.signature,
+							}
+							agBufferedParts = append(agBufferedParts, cPart)
 						}
-						for _, pev := range agPendingToolEvents {
-							enc.event(pev)
-						}
-						agPendingToolEvents = nil
 					}
 				}
 				if failed == "" || ev.Kind == KError {
@@ -1385,14 +1474,65 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			})
 		})
 		if serr != nil && failed == "" {
-			// the upstream died mid-reply: say so in the client's own
-			// protocol instead of finishing as if all went well
 			failed = p.Name + ": " + serr.Error()
 			enc.event(Event{Kind: KError, Text: failed})
 		}
 		if isAg && !sawStop && failed == "" {
 			failed = "upstream stream ended without finish reason"
 			enc.event(Event{Kind: KError, Text: failed})
+		}
+		if isAg && failed == "" && r.Context().Err() == nil && sawStop {
+			var agBufferedBindings []AntigravityToolBinding
+			for _, cp := range agBufferedParts {
+				if cp.Kind == ToolCall {
+					agBufferedBindings = append(agBufferedBindings, AntigravityToolBinding{
+						Scope:           agScope,
+						NativeID:        cp.CallID,
+						NativeName:      cp.Name,
+						NativeArgs:      json.RawMessage(cp.Args),
+						NativeSignature: cp.ThoughtSignature,
+						ClientID:        cp.CallID,
+						ClientName:      cp.Name,
+					})
+				}
+			}
+			if err := commitAntigravityRound(agScope, agSessionRef, agBufferedParts, agBufferedBindings); err != nil {
+				failed = "storage commit failed: " + err.Error()
+				enc.event(Event{Kind: KError, Text: failed})
+				agPendingToolEvents = nil
+			} else {
+				for _, pev := range agPendingToolEvents {
+					enc.event(pev)
+				}
+				agPendingToolEvents = nil
+				if breq.sourceProto == provider.Responses {
+					respID := streamRespID
+					if respID == "" {
+						respID = newID()
+					}
+					if !strings.HasPrefix(respID, "resp_") {
+						respID = "resp_" + respID
+					}
+					var resParts []Part
+					for _, cp := range agBufferedParts {
+						resParts = append(resParts, Part{
+							Kind:      cp.Kind,
+							Text:      cp.Text,
+							ID:        cp.CallID,
+							Name:      cp.Name,
+							Args:      json.RawMessage(cp.Args),
+							Signature: cp.ThoughtSignature,
+						})
+					}
+					fullMsgs := append(slices.Clone(breq.Request.Messages), Message{
+						Role:  "assistant",
+						Parts: resParts,
+					})
+					defaultAntigravityParentStore.StoreParent(agScope, respID, agSessionRef, fullMsgs)
+				}
+			}
+		} else {
+			agPendingToolEvents = nil
 		}
 		if failed == "" {
 			enc.finish()
@@ -1409,9 +1549,11 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			col.add(ev)
 		})
 	}); err != nil {
-		// a partial answer is not an answer
 		msg := p.Name + ": " + err.Error()
 		return writeError(w, breq.sourceProto, 502, msg), msg
+	}
+	if r.Context().Err() != nil {
+		return writeError(w, breq.sourceProto, 499, "request canceled"), "request canceled"
 	}
 	if col.err != "" {
 		return writeError(w, breq.sourceProto, 502, p.Name+": "+col.err), col.err
@@ -1421,16 +1563,43 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
 	res2 := col.finish()
-	u.add(res2.Usage)
+	*u = res2.Usage
 	if isAg {
+		if strings.Contains(strings.ToLower(model), "claude") {
+			hasThoughtSig := false
+			hasSemanticTarget := false
+			for _, p := range res2.Parts {
+				if p.Kind == Thinking && p.Signature != "" {
+					hasThoughtSig = true
+				}
+				if hasThoughtSig && (p.Kind == Text || p.Kind == ToolCall) {
+					hasSemanticTarget = true
+				}
+			}
+			if hasThoughtSig && !hasSemanticTarget {
+				msg := "pending signature with no target"
+				return writeError(w, breq.sourceProto, 502, msg), msg
+			}
+		}
 		if breq.Request.ToolChoice == "none" && hasTool(res2.Parts) {
 			msg := "tool_choice=none violated by model tool call"
 			return writeError(w, breq.sourceProto, 502, msg), msg
 		}
 		for _, part := range res2.Parts {
-			if part.Kind == ToolCall && !declaredTools[part.Name] {
-				msg := "undeclared tool call from model: " + part.Name
-				return writeError(w, breq.sourceProto, 502, msg), msg
+			if part.Kind == ToolCall {
+				if !declaredTools[part.Name] {
+					msg := "undeclared tool call from model: " + part.Name
+					return writeError(w, breq.sourceProto, 502, msg), msg
+				}
+				if isNamedChoice && part.Name != expectedNamedTool {
+					msg := "named tool choice constraint violated: expected " + expectedNamedTool + ", got " + part.Name
+					return writeError(w, breq.sourceProto, 502, msg), msg
+				}
+				argsStr := strings.TrimSpace(argsString(part))
+				if !strings.HasPrefix(argsStr, "{") || !json.Valid([]byte(argsStr)) {
+					msg := "invalid tool call arguments from model: must be json object"
+					return writeError(w, breq.sourceProto, 502, msg), msg
+				}
 			}
 		}
 		var parts []canonicalPart
@@ -1447,6 +1616,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			parts = append(parts, cPart)
 			if part.Kind == ToolCall {
 				bindings = append(bindings, AntigravityToolBinding{
+					Scope:           agScope,
 					NativeID:        part.ID,
 					NativeName:      part.Name,
 					NativeArgs:      argsOf(part),
@@ -1454,6 +1624,27 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 					ClientID:        part.ID,
 					ClientName:      part.Name,
 				})
+			}
+		}
+		if strings.Contains(strings.ToLower(model), "claude") {
+			for i := 0; i < len(parts); i++ {
+				if parts[i].Kind == Thinking && parts[i].ThoughtSignature != "" {
+					detachedSig := parts[i].ThoughtSignature
+					parts[i].ThoughtSignature = ""
+					for j := i + 1; j < len(parts); j++ {
+						if parts[j].Kind == Text || parts[j].Kind == ToolCall {
+							parts[j].ThoughtSignature = detachedSig
+							if parts[j].Kind == ToolCall {
+								for bi := range bindings {
+									if bindings[bi].NativeID == parts[j].CallID {
+										bindings[bi].NativeSignature = detachedSig
+									}
+								}
+							}
+							break
+						}
+					}
+				}
 			}
 		}
 		if err := commitAntigravityRound(agScope, agSessionRef, parts, bindings); err != nil {

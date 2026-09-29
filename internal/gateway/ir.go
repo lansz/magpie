@@ -85,7 +85,10 @@ type Tool struct {
 // Request is a call to a model, whichever API it arrived in.
 type Request struct {
 	Model              string
-	PreviousResponseID string // responses API: reference to previous response
+	PreviousResponseID string                  // responses API: reference to previous response
+	Scope              antigravitySessionScope // Antigravity request scope
+	SessionRef         string                  // session reference for ledger lookup
+	BaseRevision       int                     // revision when request started
 	System             string
 	Messages           []Message
 	Tools              []Tool
@@ -238,7 +241,7 @@ func (c *collector) add(ev Event) {
 		c.closeTool()
 		c.res.Stop = ev.Stop
 	case KUsage:
-		if c.res.Stop != "" && ev.Usage.Input > 0 {
+		if c.res.Stop != "" {
 			c.res.Usage = ev.Usage
 		} else {
 			c.res.Usage.add(ev.Usage)

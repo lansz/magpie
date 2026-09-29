@@ -69,7 +69,7 @@ func auditRun(t *testing.T, from provider.Protocol, body, reply string, persist 
 	p := provider.Provider{ID: "audit", Name: "audit", Key: "synthetic", Account: &provider.Account{Agent: "antigravity", User: "synthetic-user", Project: "synthetic-project"}}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/dummy", strings.NewReader(body))
-	req.Header.Set("X-Magpie-Session", "audit-session")
+	req.Header.Set("X-Magpie-Session", "audit-session-"+t.Name())
 	var usage Usage
 	status, _ := s.translate(rec, req, p, from, provider.CodeAssist, "gemini-3.8-flash-high", []byte(body), &usage)
 	return rec, tr, status
@@ -154,7 +154,7 @@ func testB22AuditFindings(t *testing.T) {
 		s := &Server{client: &http.Client{Transport: tr}, unfit: map[string]bool{}}
 		body := strings.Replace(auditToolBody, `"model":"m"`, `"model":"m","stream":true`, 1)
 		req := httptest.NewRequest("POST", "/dummy", strings.NewReader(body))
-		req.Header.Set("X-Magpie-Session", "audit-session")
+		req.Header.Set("X-Magpie-Session", "audit-session-"+t.Name())
 		var u Usage
 		s.translate(rec, req, provider.Provider{ID: "audit", Key: "synthetic", Account: &provider.Account{Agent: "antigravity"}}, provider.Anthropic, provider.CodeAssist, "gemini-3.8-flash-high", []byte(body), &u)
 		if strings.Contains(outputBefore, `"type":"tool_use"`) {

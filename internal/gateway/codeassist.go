@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -54,6 +55,18 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 					sig = pendingSignature
 					pendingSignature = ""
 				}
+				if sig == "" && ag && r.SessionRef != "" {
+					if rec, ok := defaultAntigravityLedger.Lookup(r.Scope, r.SessionRef); ok {
+						if hist, ok := rec.Data["history"].([]canonicalPart); ok {
+							for _, h := range hist {
+								if h.Kind == Text && h.Text == p.Text && h.ThoughtSignature != "" {
+									sig = h.ThoughtSignature
+									break
+								}
+							}
+						}
+					}
+				}
 				textPart := map[string]any{"text": p.Text}
 				if sig != "" && ag {
 					textPart["thoughtSignature"] = sig
@@ -77,7 +90,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 					pendingSignature = ""
 				}
 				if ag {
-					if binding, ok := defaultToolBindingStore.LookupByClientID(p.ID); ok {
+					if binding, ok := defaultToolBindingStore.LookupByClientIDScoped(r.Scope, p.ID); ok {
 						name = binding.NativeName
 						args = json.RawMessage(binding.NativeArgs)
 						id = binding.NativeID
@@ -105,7 +118,7 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				name := names[p.CallID]
 				resID := p.CallID
 				if ag {
-					if binding, ok := defaultToolBindingStore.LookupByClientID(p.CallID); ok {
+					if binding, ok := defaultToolBindingStore.LookupByClientIDScoped(r.Scope, p.CallID); ok {
 						name = binding.NativeName
 						resID = binding.NativeID
 					}
@@ -196,8 +209,8 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		var decls []map[string]any
 		for _, t := range r.Tools {
 			name := t.Name
-			if ag {
-				if nativeName, ok := defaultToolBindingStore.LookupNativeName(t.Name); ok {
+			if ag && GetAntigravityMode() != AntigravityModeOff {
+				if nativeName, ok := defaultToolBindingStore.LookupNativeNameScoped(r.Scope, t.Name); ok {
 					name = nativeName
 				}
 			}
@@ -225,8 +238,8 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			mode = "ANY"
 			targetName := strings.TrimPrefix(r.ToolChoice, "name:")
-			if ag {
-				if nativeName, ok := defaultToolBindingStore.LookupNativeName(targetName); ok {
+			if ag && GetAntigravityMode() != AntigravityModeOff {
+				if nativeName, ok := defaultToolBindingStore.LookupNativeNameScoped(r.Scope, targetName); ok {
 					targetName = nativeName
 				}
 			}
@@ -374,6 +387,10 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 						merged[k] = v
 					}
 				}
+				var allRequired []any
+				if r, ok := merged["required"].([]any); ok {
+					allRequired = append(allRequired, r...)
+				}
 				for _, e := range all {
 					if m, ok := walk(e, depth+1).(map[string]any); ok {
 						for k, v := range m {
@@ -386,25 +403,57 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 									props[pk] = pv
 								}
 								merged["properties"] = props
+							} else if k == "required" {
+								if reqs, ok := v.([]any); ok {
+									for _, req := range reqs {
+										if !slices.Contains(allRequired, req) {
+											allRequired = append(allRequired, req)
+										}
+									}
+								}
 							} else if _, has := merged[k]; !has {
 								merged[k] = v
 							}
 						}
 					}
 				}
+				if len(allRequired) > 0 {
+					merged["required"] = allRequired
+				}
 				return walk(merged, depth+1)
 			}
 			// anyOf / oneOf: the first member that isn't null, nullable
 			for _, k := range []string{"anyOf", "oneOf"} {
 				if alts, ok := x[k].([]any); ok {
-					var pick map[string]any
+					var nonNull []any
 					nullable := false
 					for _, a := range alts {
 						m, _ := a.(map[string]any)
 						if m["type"] == "null" {
 							nullable = true
-						} else if pick == nil && m != nil {
+						} else if m != nil {
+							nonNull = append(nonNull, a)
+						}
+					}
+					if len(nonNull) > 1 {
+						var outAlts []any
+						for _, a := range nonNull {
+							outAlts = append(outAlts, walk(a, depth+1))
+						}
+						out := map[string]any{k: outAlts}
+						if nullable {
+							out["nullable"] = true
+						}
+						if d, ok := x["description"].(string); ok {
+							out["description"] = d
+						}
+						return out
+					}
+					var pick map[string]any
+					for _, a := range nonNull {
+						if m, ok := a.(map[string]any); ok {
 							pick = m
+							break
 						}
 					}
 					out := map[string]any{}

@@ -226,7 +226,7 @@ const (
 
 var (
 	antigravityModeMu      sync.RWMutex
-	currentAntigravityMode = AntigravityModeOff
+	currentAntigravityMode = ""
 )
 
 func SetAntigravityMode(mode string) {
@@ -237,24 +237,26 @@ func SetAntigravityMode(mode string) {
 		currentAntigravityMode = AntigravityModeVerified
 	case "strict":
 		currentAntigravityMode = AntigravityModeStrict
-	default:
+	case "off":
 		currentAntigravityMode = AntigravityModeOff
+	default:
+		currentAntigravityMode = AntigravityModeVerified
 	}
 }
 
 func GetAntigravityMode() string {
 	antigravityModeMu.RLock()
 	defer antigravityModeMu.RUnlock()
-	if currentAntigravityMode != AntigravityModeOff {
+	if currentAntigravityMode != "" {
 		return currentAntigravityMode
 	}
 	switch strings.ToLower(settings.Load().AntigravityCompatibility) {
-	case "verified":
-		return AntigravityModeVerified
+	case "off":
+		return AntigravityModeOff
 	case "strict":
 		return AntigravityModeStrict
 	default:
-		return AntigravityModeOff
+		return AntigravityModeVerified
 	}
 }
 

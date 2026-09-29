@@ -332,7 +332,10 @@ func buildAnthropic(r *Request, model string) []byte {
 
 // anthropicDecoder leaves out the blocks of Anthropic's own server tools —
 // a web search it ran — whose input is no call of the client's.
-type anthropicDecoder struct{ server map[int]bool }
+type anthropicDecoder struct {
+	server map[int]bool
+	usage  Usage
+}
 
 func (d *anthropicDecoder) decode(data string, emit func(Event)) error {
 	var ev struct {
@@ -352,11 +355,15 @@ func (d *anthropicDecoder) decode(data string, emit func(Event)) error {
 			}
 		}
 	}
-	return decodeAnthropic(data, emit)
+	return decodeAnthropicWithUsage(data, &d.usage, emit)
 }
 
 // decodeAnthropic turns an Anthropic event stream into events.
 func decodeAnthropic(data string, emit func(Event)) error {
+	return decodeAnthropicWithUsage(data, nil, emit)
+}
+
+func decodeAnthropicWithUsage(data string, usage *Usage, emit func(Event)) error {
 	var ev struct {
 		Type    string `json:"type"`
 		Message struct {
@@ -390,7 +397,12 @@ func decodeAnthropic(data string, emit func(Event)) error {
 	}
 	switch ev.Type {
 	case "message_start":
-		emit(Event{Kind: KStart, MsgID: ev.Message.ID, Model: ev.Message.Model, Usage: ev.Message.Usage.usage()})
+		u := ev.Message.Usage.usage()
+		if usage != nil {
+			usage.add(u)
+			u = *usage
+		}
+		emit(Event{Kind: KStart, MsgID: ev.Message.ID, Model: ev.Message.Model, Usage: u})
 	case "content_block_start":
 		switch ev.ContentBlock.Type {
 		case "tool_use":
@@ -415,7 +427,12 @@ func decodeAnthropic(data string, emit func(Event)) error {
 		if ev.Delta.StopReason != "" {
 			emit(Event{Kind: KStop, Stop: stopFromAnthropic(ev.Delta.StopReason)})
 		}
-		emit(Event{Kind: KUsage, Usage: ev.Usage.usage()})
+		u := ev.Usage.usage()
+		if usage != nil {
+			usage.add(u)
+			u = *usage
+		}
+		emit(Event{Kind: KUsage, Usage: u})
 	case "error":
 		emit(Event{Kind: KError, Text: ev.Error.Message})
 	}

@@ -22,7 +22,10 @@ func testB11Signature(t *testing.T) {
 func testB11GeminiTailSignatureAttachesToMergedText(t *testing.T) {
 	fix := fixtureF01GeminiTailSignature()
 
-	canonical := canonicalizeAntigravityParts("gemini-3.8-flash-high", fix.RawParts)
+	canonical, err := canonicalizeAntigravityParts("gemini-3.8-flash-high", fix.RawParts)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
 	if err := compareAntigravityFixture(fix, canonical, nil); err != nil {
 		t.Fatalf("Gemini tail signature canonicalization failed: %v", err)
 	}
@@ -43,7 +46,10 @@ func testB11GeminiTailSignatureAttachesToMergedText(t *testing.T) {
 func testB11ClaudeDetachedSignatureAttachesToNextSemanticPart(t *testing.T) {
 	fix := fixtureF02ClaudeThoughtTextSigAB()
 
-	canonical := canonicalizeAntigravityParts("claude-sonnet-4-6", fix.RawParts)
+	canonical, err := canonicalizeAntigravityParts("claude-sonnet-4-6", fix.RawParts)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
 	if err := compareAntigravityFixture(fix, canonical, nil); err != nil {
 		t.Fatalf("Claude detached signature canonicalization failed: %v", err)
 	}

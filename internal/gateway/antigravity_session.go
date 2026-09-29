@@ -223,6 +223,11 @@ func (l *antigravitySessionLedger) Lookup(scope antigravitySessionScope, session
 		round, err := currentAntigravityPersister.LoadRound(scope, sessionRef)
 		if err == nil && round != nil {
 			if len(round.Bindings) > 0 {
+				for i := range round.Bindings {
+					if round.Bindings[i].Scope.Account == "" {
+						round.Bindings[i].Scope = scope
+					}
+				}
 				_ = defaultToolBindingStore.Bind(round.Bindings...)
 			}
 			newRec := &antigravityLedgerRecord{
@@ -315,6 +320,12 @@ func verifyCommittedHistory(scope antigravitySessionScope, committed []canonical
 			}
 		}
 		if exp.Kind == ToolResult {
+			if exp.CallID != "" && act.CallID != exp.CallID {
+				return fmt.Errorf("history tool result CallID mismatch: committed %q != submitted %q", exp.CallID, act.CallID)
+			}
+			if exp.Text != "" && act.Text != exp.Text {
+				return fmt.Errorf("history tool result text tampered for call %q: committed %q != submitted %q", exp.CallID, exp.Text, act.Text)
+			}
 			if exp.Args == `{"is_error":true}` && act.Args != `{"is_error":true}` {
 				return fmt.Errorf("history tool result is_error tampered for call %q", exp.CallID)
 			}
@@ -323,13 +334,23 @@ func verifyCommittedHistory(scope antigravitySessionScope, committed []canonical
 	return nil
 }
 
-// validateAntigravitySessionResume validates session reference and history consistency when strict resume is requested.
-func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Header, body []byte, from provider.Protocol) error {
-	strict := false
-	if in != nil && strings.EqualFold(in.Get("X-Antigravity-Resume"), "strict") {
-		strict = true
+func hasAssistantTurn(messages []Message) bool {
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			return true
+		}
 	}
-	if !strict {
+	return false
+}
+
+// validateAntigravitySessionResume validates session reference and history consistency when strict resume is requested.
+func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Header, body []byte, from provider.Protocol, req *Request) error {
+	explicitResumeStrict := in != nil && strings.EqualFold(in.Get("X-Antigravity-Resume"), "strict")
+	serverStrict := effectiveAntigravityMode(in) == AntigravityModeStrict
+	if !explicitResumeStrict && !serverStrict {
+		return nil
+	}
+	if !explicitResumeStrict && req != nil && !hasAssistantTurn(req.Messages) && req.PreviousResponseID == "" {
 		return nil
 	}
 	sessionRef := extractSessionReference(scope.Caller, in, body)
@@ -346,8 +367,7 @@ func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Hea
 		return fmt.Errorf("antigravity session not found in scope: %s", sessionRef)
 	}
 	if hist, ok := rec.Data["history"].([]canonicalPart); ok && len(hist) > 0 {
-		req, err := parse(from, body)
-		if err == nil {
+		if req != nil {
 			if err := verifyCommittedHistory(scope, hist, req); err != nil {
 				return err
 			}

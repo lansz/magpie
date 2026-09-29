@@ -46,9 +46,9 @@ type canonicalPart struct {
 
 // canonicalizeAntigravityParts normalizes native raw parts into canonical representations
 // according to model-specific signature and thought rules.
-func canonicalizeAntigravityParts(model string, raw []rawPart) []canonicalPart {
+func canonicalizeAntigravityParts(model string, raw []rawPart) ([]canonicalPart, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	claude := strings.Contains(strings.ToLower(model), "claude")
@@ -192,9 +192,12 @@ func canonicalizeAntigravityParts(model string, raw []rawPart) []canonicalPart {
 			}
 		}
 		flushText()
+		if pendingSig != "" {
+			return nil, fmt.Errorf("pending signature with no target")
+		}
 	}
 
-	return out
+	return out, nil
 }
 
 // jsonEqualExact performs exact semantic JSON comparison with sorted keys and number preservation.
