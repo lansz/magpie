@@ -9,9 +9,10 @@ import (
 // AntigravityToolBinding preserves the exact bidirectional contract between
 // upstream native calls (e.g. view_file) and client-exposed tools (e.g. Read).
 type AntigravityToolBinding struct {
-	NativeID   string          `json:"native_id"`
-	NativeName string          `json:"native_name"`
-	NativeArgs json.RawMessage `json:"native_args"`
+	NativeID        string          `json:"native_id"`
+	NativeName      string          `json:"native_name"`
+	NativeArgs      json.RawMessage `json:"native_args"`
+	NativeSignature string          `json:"native_signature,omitempty"`
 
 	ClientID   string          `json:"client_id"`
 	ClientName string          `json:"client_name"`

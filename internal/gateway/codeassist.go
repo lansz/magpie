@@ -43,8 +43,12 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		for _, p := range m.Parts {
 			switch p.Kind {
 			case Text:
+				textPart := map[string]any{"text": p.Text}
+				if p.Signature != "" && ag {
+					textPart["thoughtSignature"] = p.Signature
+				}
 				if p.Text != "" {
-					parts = append(parts, map[string]any{"text": p.Text})
+					parts = append(parts, textPart)
 				}
 			case Image, File:
 				if p.Data != "" {
@@ -56,11 +60,15 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				name := p.Name
 				args := json.RawMessage(argsOf(p))
 				id := p.ID
+				sig := p.Signature
 				if ag {
 					if binding, ok := defaultToolBindingStore.LookupByClientID(p.ID); ok {
 						name = binding.NativeName
 						args = json.RawMessage(binding.NativeArgs)
 						id = binding.NativeID
+						if binding.NativeSignature != "" {
+							sig = binding.NativeSignature
+						}
 					}
 				}
 				names[p.ID] = name
@@ -68,7 +76,16 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				if tid := toolID(id); tid != "" {
 					call["id"] = tid
 				}
-				parts = append(parts, map[string]any{"functionCall": call, "thoughtSignature": skipSignature})
+				callPart := map[string]any{"functionCall": call}
+				if ag {
+					// Reason: B11 requires real signatures only on Antigravity; eliminate skipSignature pseudo-signature
+					if sig != "" {
+						callPart["thoughtSignature"] = sig
+					}
+				} else {
+					callPart["thoughtSignature"] = skipSignature
+				}
+				parts = append(parts, callPart)
 			case ToolResult:
 				name := names[p.CallID]
 				resID := p.CallID
