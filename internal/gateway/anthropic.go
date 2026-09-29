@@ -137,6 +137,9 @@ func parseAnthropic(body []byte) (*Request, error) {
 	// output_config's effort sets how hard the model thinks only when it
 	// was asked to think: Claude Code's title requests carry effort but no
 	// thinking, and reasoning_effort would turn it on upstream
+	if th := a.Thinking; th != nil && th.Type == "disabled" {
+		r.NoThinking = true
+	}
 	if th := a.Thinking; th != nil && (th.Type == "enabled" || th.Type == "adaptive") {
 		r.Thinking = true
 		r.Effort = effortOfBudget(th.BudgetTokens)

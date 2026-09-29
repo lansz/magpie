@@ -142,10 +142,12 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 	if len(r.Stop) > 0 {
 		gen["stopSequences"] = r.Stop
 	}
-	if tc := thinkingConfig(r, model, claude); tc != nil {
+	if tc := thinkingConfig(r, model, claude, ag); tc != nil {
 		gen["thinkingConfig"] = tc
-		// Claude's answer has to have room past its thinking
-		if b, ok := tc["thinkingBudget"].(int); ok && claude && gen["maxOutputTokens"] == nil {
+		// Claude's answer has to have room past the thinking it was asked for;
+		// a default budget leaves the output limit to the upstream, as it was
+		asked := r.Thinking || r.Effort != ""
+		if b, ok := tc["thinkingBudget"].(int); ok && claude && asked && gen["maxOutputTokens"] == nil {
 			gen["maxOutputTokens"] = b + 32000
 		}
 	}
@@ -156,11 +158,34 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 	return b
 }
 
+// antigravityThinkingBudgets are the thinking budgets Antigravity's official
+// client sends each model when nobody says how hard to think.
+var antigravityThinkingBudgets = map[string]int{
+	"gemini-3.8-flash-high": -1, // dynamic: the model decides
+	"gemini-3.8-flash-low":  1000,
+	"claude-sonnet-4-6":     1024,
+}
+
 // thinkingConfig says how hard the model should think: a level for
 // Gemini 3, a budget for the rest. A model that doesn't think gets none.
-func thinkingConfig(r *Request, model string, claude bool) map[string]any {
+func thinkingConfig(r *Request, model string, claude, ag bool) map[string]any {
 	m := strings.ToLower(model)
-	if strings.HasPrefix(m, "gpt-oss") || claude && !strings.Contains(m, "thinking") {
+	if ag {
+		if r.NoThinking {
+			return nil
+		}
+		// Reason: the caller didn't say, so do as Antigravity's own client does
+		// for the models it was measured with; others keep the rules below
+		if budget, ok := antigravityThinkingBudgets[m]; ok && r.Effort == "" && !r.Thinking {
+			if claude && r.MaxTokens > 0 && budget >= r.MaxTokens {
+				// Claude's thinking has to fit below its output limit
+				return nil
+			}
+			return map[string]any{"includeThoughts": true, "thinkingBudget": budget}
+		}
+	}
+	// Antigravity's Claude thinks whatever its name, as its own client shows
+	if strings.HasPrefix(m, "gpt-oss") || claude && !ag && !strings.Contains(m, "thinking") {
 		return nil
 	}
 	if r.Effort == "" && !r.Thinking {

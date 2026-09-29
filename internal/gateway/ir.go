@@ -95,6 +95,7 @@ type Request struct {
 	Stream     bool
 	Effort     string // low | medium | high | xhigh | max, when the client asked
 	Thinking   bool   // the client asked for visible reasoning
+	NoThinking bool   // the client turned thinking off, as against not saying
 	Parallel   *bool  // parallel tool calls allowed
 	WebSearch  bool   // the client offered its provider's own web search
 	Fast       bool   // the client asked for priority processing (Codex's Fast mode)

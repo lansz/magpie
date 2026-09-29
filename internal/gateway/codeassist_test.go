@@ -76,9 +76,9 @@ func TestBuildCodeAssistForAntigravity(t *testing.T) {
 			t.Errorf("missing %s in\n%s", want, s)
 		}
 	}
-	// Sonnet here doesn't think
-	if strings.Contains(s, "thinkingConfig") {
-		t.Error("thinking asked of a model that doesn't")
+	// Antigravity's Sonnet thinks as asked, its budget kept below max_tokens
+	if !strings.Contains(s, `"thinkingConfig":{"includeThoughts":true,"thinkingBudget":1999}`) {
+		t.Errorf("thinking not asked of Sonnet as the client wanted in\n%s", s)
 	}
 	// the official client sends auto tool choice without a toolConfig
 	if strings.Contains(s, "toolConfig") {
