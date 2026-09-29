@@ -216,8 +216,79 @@ func (l *antigravitySessionLedger) Lookup(scope antigravitySessionScope, session
 	return rec, ok
 }
 
-// validateAntigravitySessionResume validates session reference when strict resume is requested.
-func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Header, body []byte) error {
+// verifyCommittedHistory verifies that the submitted history matches committed canonical history without tampering.
+func verifyCommittedHistory(scope antigravitySessionScope, committed []canonicalPart, req *Request) error {
+	if len(committed) == 0 || req == nil {
+		return nil
+	}
+	var submitted []canonicalPart
+	for _, m := range req.Messages {
+		if m.Role == "assistant" {
+			for _, p := range m.Parts {
+				switch p.Kind {
+				case Thinking:
+					submitted = append(submitted, canonicalPart{Kind: Thinking, Text: p.Text, ThoughtSignature: p.Signature})
+				case Text:
+					submitted = append(submitted, canonicalPart{Kind: Text, Text: p.Text, ThoughtSignature: p.Signature})
+				case ToolCall:
+					submitted = append(submitted, canonicalPart{Kind: ToolCall, CallID: p.ID, Name: p.Name, Args: string(p.Args)})
+				}
+			}
+		} else if m.Role == "user" {
+			for _, p := range m.Parts {
+				if p.Kind == ToolResult {
+					argsStr := ""
+					if p.IsError {
+						argsStr = `{"is_error":true}`
+					}
+					submitted = append(submitted, canonicalPart{Kind: ToolResult, CallID: p.CallID, Name: p.Name, Text: p.Text, Args: argsStr})
+				}
+			}
+		}
+	}
+
+	if len(submitted) < len(committed) {
+		return fmt.Errorf("submitted history is missing committed turns: got %d, want at least %d", len(submitted), len(committed))
+	}
+
+	for i, exp := range committed {
+		act := submitted[i]
+		if act.Kind != exp.Kind {
+			return fmt.Errorf("history kind mismatch at part %d: committed %v != submitted %v", i, exp.Kind, act.Kind)
+		}
+		if exp.Kind == Text && act.Text != exp.Text {
+			return fmt.Errorf("history text mismatch at part %d: committed %q != submitted %q", i, exp.Text, act.Text)
+		}
+		if exp.Kind == Thinking {
+			if act.Text != exp.Text {
+				return fmt.Errorf("history thinking text mismatch: committed %q != submitted %q", exp.Text, act.Text)
+			}
+			if exp.ThoughtSignature != "" && act.ThoughtSignature != "" && act.ThoughtSignature != exp.ThoughtSignature {
+				return fmt.Errorf("history thinking signature mismatch: committed %q != submitted %q", exp.ThoughtSignature, act.ThoughtSignature)
+			}
+		}
+		if exp.Kind == ToolCall {
+			if exp.CallID != "" && act.CallID != exp.CallID {
+				return fmt.Errorf("history tool call ID mismatch: committed %q != submitted %q", exp.CallID, act.CallID)
+			}
+			if exp.Args != "" {
+				match, err := jsonEqualExact([]byte(act.Args), []byte(exp.Args))
+				if err != nil || !match {
+					return fmt.Errorf("history tool args tampered for call %q: committed %s != submitted %s", exp.CallID, exp.Args, act.Args)
+				}
+			}
+		}
+		if exp.Kind == ToolResult {
+			if exp.Args == `{"is_error":true}` && act.Args != `{"is_error":true}` {
+				return fmt.Errorf("history tool result is_error tampered for call %q", exp.CallID)
+			}
+		}
+	}
+	return nil
+}
+
+// validateAntigravitySessionResume validates session reference and history consistency when strict resume is requested.
+func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Header, body []byte, from provider.Protocol) error {
 	strict := false
 	if in != nil && strings.EqualFold(in.Get("X-Antigravity-Resume"), "strict") {
 		strict = true
@@ -229,8 +300,17 @@ func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Hea
 	if sessionRef == "" {
 		return fmt.Errorf("antigravity session resume requires a valid session reference")
 	}
-	if _, ok := defaultAntigravityLedger.Lookup(scope, sessionRef); !ok {
+	rec, ok := defaultAntigravityLedger.Lookup(scope, sessionRef)
+	if !ok {
 		return fmt.Errorf("antigravity session not found in scope: %s", sessionRef)
+	}
+	if hist, ok := rec.Data["history"].([]canonicalPart); ok && len(hist) > 0 {
+		req, err := parse(from, body)
+		if err == nil {
+			if err := verifyCommittedHistory(scope, hist, req); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

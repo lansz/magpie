@@ -1189,7 +1189,7 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			Project: p.Account.Project,
 			Model:   model,
 		}
-		if err := validateAntigravitySessionResume(scope, r.Header, body); err != nil {
+		if err := validateAntigravitySessionResume(scope, r.Header, body, from); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
 		if err := resolveAntigravityParentResponse(scope, request); err != nil {
