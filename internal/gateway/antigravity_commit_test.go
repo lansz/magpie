@@ -183,6 +183,10 @@ type trackingPersister struct {
 }
 
 func (t *trackingPersister) CommitRound(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding) error {
+	return t.CommitRoundWithRevision(scope, sessionRef, canonical, bindings, 0)
+}
+
+func (t *trackingPersister) CommitRoundWithRevision(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding, revision int) error {
 	if t.failErr != nil {
 		return t.failErr
 	}

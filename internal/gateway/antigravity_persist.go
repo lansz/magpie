@@ -12,6 +12,7 @@ import (
 type persistedRound struct {
 	Scope     antigravitySessionScope  `json:"scope"`
 	Session   string                   `json:"session"`
+	Revision  int                      `json:"revision,omitempty"`
 	Canonical []canonicalPart          `json:"canonical"`
 	Bindings  []AntigravityToolBinding `json:"bindings"`
 }
@@ -19,6 +20,7 @@ type persistedRound struct {
 // antigravityPersister defines the atomic persistence contract for an Antigravity round.
 type antigravityPersister interface {
 	CommitRound(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding) error
+	CommitRoundWithRevision(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding, revision int) error
 	LoadRound(scope antigravitySessionScope, sessionRef string) (*persistedRound, error)
 }
 
@@ -36,6 +38,10 @@ func newFileAntigravityPersister(baseDir string) *fileAntigravityPersister {
 }
 
 func (p *fileAntigravityPersister) CommitRound(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding) error {
+	return p.CommitRoundWithRevision(scope, sessionRef, canonical, bindings, 0)
+}
+
+func (p *fileAntigravityPersister) CommitRoundWithRevision(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding, revision int) error {
 	p.Lock()
 	defer p.Unlock()
 
@@ -44,9 +50,22 @@ func (p *fileAntigravityPersister) CommitRound(scope antigravitySessionScope, se
 		return nil
 	}
 
+	destName := filepath.Join(p.baseDir, sanitizeFilename(key)+".json")
+
+	// Optimistic concurrency check: stale revision cannot overwrite newer state
+	if revision > 0 {
+		if data, err := os.ReadFile(destName); err == nil {
+			var existing persistedRound
+			if json.Unmarshal(data, &existing) == nil && existing.Revision >= revision {
+				return fmt.Errorf("revision conflict on session %q: current revision %d >= proposed revision %d", sessionRef, existing.Revision, revision)
+			}
+		}
+	}
+
 	payload := persistedRound{
 		Scope:     scope,
 		Session:   sessionRef,
+		Revision:  revision,
 		Canonical: canonical,
 		Bindings:  bindings,
 	}
@@ -74,7 +93,6 @@ func (p *fileAntigravityPersister) CommitRound(scope antigravitySessionScope, se
 	}
 	tmpFile.Close()
 
-	destName := filepath.Join(p.baseDir, sanitizeFilename(key)+".json")
 	if err := os.Rename(tmpName, destName); err != nil {
 		return fmt.Errorf("failed to atomically commit round file: %w", err)
 	}
