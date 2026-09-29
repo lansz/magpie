@@ -1192,6 +1192,9 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		if err := validateAntigravitySessionResume(scope, r.Header, body); err != nil {
 			return writeError(w, from, 400, err.Error()), err.Error()
 		}
+		if err := resolveAntigravityParentResponse(scope, request); err != nil {
+			return writeError(w, from, 400, err.Error()), err.Error()
+		}
 	}
 	breq := newBridgeRequest(request, from, profile)
 	if breq.WebSearch && !searching(r.Context()) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -34,6 +35,71 @@ type antigravitySessionLedger struct {
 
 var defaultAntigravityLedger = &antigravitySessionLedger{
 	records: make(map[string]*antigravityLedgerRecord),
+}
+
+// antigravityParentRecord represents a cached parent response output for Responses API incremental requests.
+type antigravityParentRecord struct {
+	ResponseID string
+	SessionID  string
+	Scope      antigravitySessionScope
+	Messages   []Message
+}
+
+type antigravityParentStore struct {
+	sync.RWMutex
+	records map[string]*antigravityParentRecord
+}
+
+var defaultAntigravityParentStore = &antigravityParentStore{
+	records: make(map[string]*antigravityParentRecord),
+}
+
+func buildParentStoreKey(scope antigravitySessionScope, responseID string) string {
+	if responseID == "" {
+		return ""
+	}
+	return scope.Caller + "\x00" + scope.Account + "\x00" + scope.Project + "\x00" + scope.Model + "\x00" + responseID
+}
+
+func (s *antigravityParentStore) StoreParent(scope antigravitySessionScope, responseID, sessionID string, msgs []Message) {
+	key := buildParentStoreKey(scope, responseID)
+	if key == "" {
+		return
+	}
+	s.Lock()
+	s.records[key] = &antigravityParentRecord{
+		ResponseID: responseID,
+		SessionID:  sessionID,
+		Scope:      scope,
+		Messages:   msgs,
+	}
+	s.Unlock()
+}
+
+func (s *antigravityParentStore) LookupParent(scope antigravitySessionScope, responseID string) (*antigravityParentRecord, bool) {
+	key := buildParentStoreKey(scope, responseID)
+	if key == "" {
+		return nil, false
+	}
+	s.RLock()
+	rec, ok := s.records[key]
+	s.RUnlock()
+	return rec, ok
+}
+
+// resolveAntigravityParentResponse resolves parent response history for Responses API incremental requests.
+func resolveAntigravityParentResponse(scope antigravitySessionScope, req *Request) error {
+	if req == nil || req.PreviousResponseID == "" {
+		return nil
+	}
+	parent, ok := defaultAntigravityParentStore.LookupParent(scope, req.PreviousResponseID)
+	if !ok {
+		return fmt.Errorf("previous_response_id not found in scope: %s", req.PreviousResponseID)
+	}
+	// Prepend parent history messages to current incremental messages without duplicates
+	full := append(slices.Clone(parent.Messages), req.Messages...)
+	req.Messages = mergeTurns(full)
+	return nil
 }
 
 // detectClientProfile detects the caller profile at the protocol/request boundary.

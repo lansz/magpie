@@ -38,10 +38,11 @@ type rText struct {
 }
 
 type rRequest struct {
-	Model        string          `json:"model"`
-	Instructions string          `json:"instructions,omitempty"`
-	Input        json.RawMessage `json:"input"`
-	Tools        []struct {
+	Model              string          `json:"model"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Instructions       string          `json:"instructions,omitempty"`
+	Input              json.RawMessage `json:"input"`
+	Tools              []struct {
 		Type        string          `json:"type"`
 		Name        string          `json:"name"`
 		Description string          `json:"description,omitempty"`
@@ -65,7 +66,7 @@ func parseResponses(body []byte) (*Request, error) {
 	if err := json.Unmarshal(body, &q); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
-	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
+	r := &Request{Model: q.Model, PreviousResponseID: q.PreviousResponseID, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
 		TopP: q.TopP, Stream: q.Stream, Parallel: q.ParallelToolCalls, Fast: q.ServiceTier == "priority"}
 	if q.Reasoning != nil {
 		r.Effort = effortOf(q.Reasoning.Effort)

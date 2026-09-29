@@ -17,4 +17,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B04_ToolCatalog", testB04ToolCatalog)
 	t.Run("B05_EnvelopeProfile", testB05EnvelopeProfile)
 	t.Run("B06_SessionIsolation", testB06SessionIsolation)
+	t.Run("B07_ParentResponse", testB07ParentResponse)
 }

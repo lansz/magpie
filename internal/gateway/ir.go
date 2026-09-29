@@ -83,22 +83,23 @@ type Tool struct {
 
 // Request is a call to a model, whichever API it arrived in.
 type Request struct {
-	Model      string
-	System     string
-	Messages   []Message
-	Tools      []Tool
-	ToolChoice string // "" | auto | none | required | name:<tool>
-	MaxTokens  int
-	Temp       *float64
-	TopP       *float64
-	Stop       []string
-	Stream     bool
-	Effort     string // low | medium | high | xhigh | max, when the client asked
-	Thinking   bool   // the client asked for visible reasoning
-	NoThinking bool   // the client turned thinking off, as against not saying
-	Parallel   *bool  // parallel tool calls allowed
-	WebSearch  bool   // the client offered its provider's own web search
-	Fast       bool   // the client asked for priority processing (Codex's Fast mode)
+	Model              string
+	PreviousResponseID string // responses API: reference to previous response
+	System             string
+	Messages           []Message
+	Tools              []Tool
+	ToolChoice         string // "" | auto | none | required | name:<tool>
+	MaxTokens          int
+	Temp               *float64
+	TopP               *float64
+	Stop               []string
+	Stream             bool
+	Effort             string // low | medium | high | xhigh | max, when the client asked
+	Thinking           bool   // the client asked for visible reasoning
+	NoThinking         bool   // the client turned thinking off, as against not saying
+	Parallel           *bool  // parallel tool calls allowed
+	WebSearch          bool   // the client offered its provider's own web search
+	Fast               bool   // the client asked for priority processing (Codex's Fast mode)
 }
 
 // EventKind is what a streamed event carries.
