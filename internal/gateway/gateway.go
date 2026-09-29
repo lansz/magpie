@@ -1237,6 +1237,14 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return writeError(w, breq.sourceProto, 502, msg), msg
 	}
 	isAg := p.Account != nil && p.Account.Agent == "antigravity"
+	declaredTools := map[string]bool{}
+	for _, t := range breq.Request.Tools {
+		declaredTools[t.Name] = true
+		if nativeName, ok := defaultToolBindingStore.LookupNativeName(t.Name); ok {
+			declaredTools[nativeName] = true
+		}
+	}
+
 	var agSessionRef string
 	var agScope antigravitySessionScope
 	if isAg {
@@ -1260,6 +1268,17 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 					failed = ev.Text
 				case KStart, KUsage:
 					u.add(ev.Usage)
+				case KToolStart:
+					// Reason: B19 requires aborting undeclared tool calls from model as protocol errors.
+					if isAg && !declaredTools[ev.Name] {
+						failed = "undeclared tool call from model: " + ev.Name
+						enc.event(Event{Kind: KError, Text: failed})
+						return
+					}
+				case KToolArgs:
+					if failed != "" {
+						return
+					}
 				case KText:
 					if isAg {
 						agBufferedParts = append(agBufferedParts, canonicalPart{Kind: Text, Text: ev.Text})
@@ -1308,6 +1327,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	res2 := col.finish()
 	u.add(res2.Usage)
 	if isAg {
+		for _, part := range res2.Parts {
+			if part.Kind == ToolCall && !declaredTools[part.Name] {
+				msg := "undeclared tool call from model: " + part.Name
+				return writeError(w, breq.sourceProto, 502, msg), msg
+			}
+		}
 		var parts []canonicalPart
 		for _, part := range res2.Parts {
 			parts = append(parts, canonicalPart{Kind: part.Kind, Text: part.Text})

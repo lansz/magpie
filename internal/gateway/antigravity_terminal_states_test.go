@@ -144,7 +144,7 @@ func testB18ToolCallTerminalStateAcrossProtocols(t *testing.T) {
 		s := New()
 		s.client = &http.Client{Transport: &mockCaptureTransport{sseReply: toolSSE}}
 		rec := httptest.NewRecorder()
-		body := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+		body := `{"model":"m","tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`
 		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
 		var u Usage
 		s.translate(rec, req, p, provider.Anthropic, provider.CodeAssist, "claude-sonnet-4-6", []byte(body), &u)
@@ -166,7 +166,7 @@ func testB18ToolCallTerminalStateAcrossProtocols(t *testing.T) {
 		s := New()
 		s.client = &http.Client{Transport: &mockCaptureTransport{sseReply: toolSSE}}
 		rec := httptest.NewRecorder()
-		body := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+		body := `{"model":"m","tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"hi"}]}`
 		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 		var u Usage
 		s.translate(rec, req, p, provider.Chat, provider.CodeAssist, "claude-sonnet-4-6", []byte(body), &u)
