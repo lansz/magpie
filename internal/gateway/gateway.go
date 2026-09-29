@@ -1193,8 +1193,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 				break
 			}
 		}
-		if _, _, ok := searcher(); ok && !searchesItself(p, to) {
-			return s.searchReply(w, r, breq.sourceProto, p.Name, breq.Request, u, s.askTranslated(p, to, model, r.Header, w.Header(), breq.sourceProto, breq.clientProfile))
+		// Reason: Antigravity may only expose tools the client declared this turn;
+		// magpie's injected web_search would enlarge the catalog beyond that request.
+		if p.Account == nil || p.Account.Agent != "antigravity" {
+			if _, _, ok := searcher(); ok && !searchesItself(p, to) {
+				return s.searchReply(w, r, breq.sourceProto, p.Name, breq.Request, u, s.askTranslated(p, to, model, r.Header, w.Header(), breq.sourceProto, breq.clientProfile))
+			}
 		}
 	}
 	stream := breq.Stream
