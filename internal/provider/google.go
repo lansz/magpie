@@ -874,17 +874,31 @@ func codeAssistEnvelope(agent string, body []byte, project string) ([]byte, stri
 		return nil, "", err
 	}
 	model, _ := env["model"].(string)
-	env["project"] = project
+	// Reason: Downstream provider must not overwrite fields already established
+	// by adapters (project, userAgent, requestType, requestId, sessionId).
+	if env["project"] == nil || env["project"] == "" {
+		env["project"] = project
+	}
 	id := randomToken(12)
 	if agent == "antigravity" {
-		env["userAgent"] = "antigravity"
-		env["requestType"] = "agent"
-		env["requestId"] = "agent-" + id
+		if env["userAgent"] == nil || env["userAgent"] == "" {
+			env["userAgent"] = "antigravity"
+		}
+		if env["requestType"] == nil || env["requestType"] == "" {
+			env["requestType"] = "agent"
+		}
+		if env["requestId"] == nil || env["requestId"] == "" {
+			env["requestId"] = "agent-" + id
+		}
 		if r, ok := env["request"].(map[string]any); ok {
-			r["sessionId"] = antigravitySession(r)
+			if r["sessionId"] == nil || r["sessionId"] == "" {
+				r["sessionId"] = antigravitySession(r)
+			}
 		}
 	} else {
-		env["user_prompt_id"] = id
+		if env["user_prompt_id"] == nil || env["user_prompt_id"] == "" {
+			env["user_prompt_id"] = id
+		}
 	}
 	out, err := json.Marshal(env)
 	return out, model, err
@@ -1009,4 +1023,50 @@ func googleExchange(ctx context.Context, app googleApp, code, verifier, redirect
 		g.auth.Project, plan = p.id, p.plan
 	}
 	return g, plan, nil
+}
+
+// AntigravityTestProvider returns an Antigravity Provider for testing with explicit credentials.
+func AntigravityTestProvider(id, user, project, token string) Provider {
+	if id == "" {
+		id = "antigravity"
+	}
+	app := antigravityApp
+	acct := &Account{Agent: "antigravity", User: user, Stream: true, codeAssist: app.base}
+	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
+		out, model, err := codeAssistEnvelope("antigravity", body, project)
+		if err != nil {
+			return err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(out))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(out)), nil }
+		req.ContentLength = int64(len(out))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", app.userAgent(model))
+		req.Header.Del("Accept")
+		return nil
+	}
+	return Provider{ID: id, Name: "Antigravity", Account: acct}
+}
+
+// GeminiTestProvider returns a Gemini Code Assist Provider for testing with explicit credentials.
+func GeminiTestProvider(id, user, project, token string) Provider {
+	if id == "" {
+		id = "gemini"
+	}
+	app := geminiApp
+	acct := &Account{Agent: "gemini", User: user, Stream: true, codeAssist: app.base}
+	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
+		out, model, err := codeAssistEnvelope("gemini", body, project)
+		if err != nil {
+			return err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(out))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(out)), nil }
+		req.ContentLength = int64(len(out))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", app.userAgent(model))
+		req.Header.Del("Accept")
+		return nil
+	}
+	return Provider{ID: id, Name: "Gemini", Account: acct}
 }
