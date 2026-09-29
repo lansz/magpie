@@ -64,11 +64,10 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 				if name == "" {
 					name = "tool"
 				}
+				// Reason: Antigravity's official client puts success and error text alike in
+				// response.output; other Code Assist callers keep their error key
 				key := "output"
-				switch {
-				case ag:
-					key = "result"
-				case p.IsError:
+				if p.IsError && !ag {
 					key = "error"
 				}
 				res := map[string]any{"name": name, "response": map[string]any{key: p.Text}}
@@ -121,12 +120,13 @@ func buildCodeAssist(r *Request, model, agent string) []byte {
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			mode = "ANY"
 			fc["allowedFunctionNames"] = []string{strings.TrimPrefix(r.ToolChoice, "name:")}
-		case ag && claude:
-			// Antigravity's Claude wants its calls checked against the schema
-			mode = "VALIDATED"
 		}
-		fc["mode"] = mode
-		req["toolConfig"] = map[string]any{"functionCallingConfig": fc}
+		// Reason: Antigravity's official client sends automatic tool choice with
+		// no toolConfig at all, for Gemini and Claude alike
+		if mode != "AUTO" || !ag {
+			fc["mode"] = mode
+			req["toolConfig"] = map[string]any{"functionCallingConfig": fc}
+		}
 	}
 
 	gen := map[string]any{}

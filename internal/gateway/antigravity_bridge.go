@@ -199,3 +199,18 @@ func validateAntigravityToolArgs(from provider.Protocol, body []byte) error {
 	}
 	return nil
 }
+
+// antigravityParallelBan is the error for a request that forbids parallel tool
+// calls, or "" when it doesn't.
+// Reason: Antigravity has no field for the ban, and dropping it would let the
+// model call several tools at once against the caller's explicit wish.
+func antigravityParallelBan(from provider.Protocol, r *Request) string {
+	if r.Parallel == nil || *r.Parallel {
+		return ""
+	}
+	field := "parallel_tool_calls"
+	if from == provider.Anthropic {
+		field = "tool_choice.disable_parallel_tool_use"
+	}
+	return field + ": Antigravity cannot forbid parallel tool calls"
+}

@@ -1178,6 +1178,11 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	if p.Account != nil && p.Account.Agent == "antigravity" {
+		if msg := antigravityParallelBan(from, request); msg != "" {
+			return writeError(w, from, 400, msg), msg
+		}
+	}
 	breq := newBridgeRequest(request, from, "")
 	if breq.WebSearch && !searching(r.Context()) {
 		// an API on which the provider searches by itself comes first;

@@ -12,4 +12,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B03b_ToolArgsValidation", testB03bToolArgsValidation)
 	t.Run("B03c_ImageValidation", testB03cImageValidation)
 	t.Run("B03d_BlockTypeValidation", testB03dBlockTypeValidation)
+	t.Run("B03e_ToolContract", testB03eToolContract)
 }

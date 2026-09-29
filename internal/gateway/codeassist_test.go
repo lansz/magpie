@@ -69,8 +69,7 @@ func TestBuildCodeAssistForAntigravity(t *testing.T) {
 	s := string(b)
 	for _, want := range []string{
 		`"id":"toolu_01_x"`,
-		`"response":{"result":"A!"}`,
-		`"mode":"VALIDATED"`,
+		`"response":{"output":"A!"}`,
 		`"maxOutputTokens":2000`,
 	} {
 		if !strings.Contains(s, want) {
@@ -80,6 +79,10 @@ func TestBuildCodeAssistForAntigravity(t *testing.T) {
 	// Sonnet here doesn't think
 	if strings.Contains(s, "thinkingConfig") {
 		t.Error("thinking asked of a model that doesn't")
+	}
+	// the official client sends auto tool choice without a toolConfig
+	if strings.Contains(s, "toolConfig") {
+		t.Error("toolConfig sent for auto tool choice")
 	}
 	decl := env.Request["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)
 	params, _ := json.Marshal(decl["parameters"])
