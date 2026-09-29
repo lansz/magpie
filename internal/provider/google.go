@@ -1031,7 +1031,7 @@ func AntigravityTestProvider(id, user, project, token string) Provider {
 		id = "antigravity"
 	}
 	app := antigravityApp
-	acct := &Account{Agent: "antigravity", User: user, Stream: true, codeAssist: app.base}
+	acct := &Account{Agent: "antigravity", User: user, Project: project, Stream: true, codeAssist: app.base}
 	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
 		out, model, err := codeAssistEnvelope("antigravity", body, project)
 		if err != nil {
@@ -1054,7 +1054,7 @@ func GeminiTestProvider(id, user, project, token string) Provider {
 		id = "gemini"
 	}
 	app := geminiApp
-	acct := &Account{Agent: "gemini", User: user, Stream: true, codeAssist: app.base}
+	acct := &Account{Agent: "gemini", User: user, Project: project, Stream: true, codeAssist: app.base}
 	acct.sign = func(ctx context.Context, req *http.Request, body []byte) error {
 		out, model, err := codeAssistEnvelope("gemini", body, project)
 		if err != nil {

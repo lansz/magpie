@@ -1178,12 +1178,22 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if err != nil {
 		return writeError(w, from, 400, err.Error()), err.Error()
 	}
+	profile := detectClientProfile(r, from, body)
 	if p.Account != nil && p.Account.Agent == "antigravity" {
 		if msg := antigravityParallelBan(from, request); msg != "" {
 			return writeError(w, from, 400, msg), msg
 		}
+		scope := antigravitySessionScope{
+			Caller:  profile,
+			Account: p.Account.User,
+			Project: p.Account.Project,
+			Model:   model,
+		}
+		if err := validateAntigravitySessionResume(scope, r.Header, body); err != nil {
+			return writeError(w, from, 400, err.Error()), err.Error()
+		}
 	}
-	breq := newBridgeRequest(request, from, "")
+	breq := newBridgeRequest(request, from, profile)
 	if breq.WebSearch && !searching(r.Context()) {
 		// an API on which the provider searches by itself comes first;
 		// without one, its model is given magpie's search
