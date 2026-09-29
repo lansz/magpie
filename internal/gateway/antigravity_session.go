@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -213,7 +214,31 @@ func (l *antigravitySessionLedger) Lookup(scope antigravitySessionScope, session
 	l.RLock()
 	rec, ok := l.records[key]
 	l.RUnlock()
-	return rec, ok
+	if ok {
+		return rec, true
+	}
+
+	// Fallback: recover committed turn from persistent storage across restarts
+	if currentAntigravityPersister != nil {
+		round, err := currentAntigravityPersister.LoadRound(scope, sessionRef)
+		if err == nil && round != nil {
+			if len(round.Bindings) > 0 {
+				_ = defaultToolBindingStore.Bind(round.Bindings...)
+			}
+			newRec := &antigravityLedgerRecord{
+				SessionID: sessionRef,
+				Scope:     scope,
+				Data: map[string]any{
+					"history": round.Canonical,
+				},
+			}
+			l.Lock()
+			l.records[key] = newRec
+			l.Unlock()
+			return newRec, true
+		}
+	}
+	return nil, false
 }
 
 // verifyCommittedHistory verifies that the submitted history matches committed canonical history without tampering.
@@ -268,11 +293,19 @@ func verifyCommittedHistory(scope antigravitySessionScope, committed []canonical
 			}
 		}
 		if exp.Kind == ToolCall {
-			if exp.CallID != "" && act.CallID != exp.CallID {
+			actCallID := act.CallID
+			if b, ok := defaultToolBindingStore.LookupByClientID(act.CallID); ok {
+				actCallID = b.NativeID
+			}
+			if exp.CallID != "" && actCallID != exp.CallID {
 				return fmt.Errorf("history tool call ID mismatch: committed %q != submitted %q", exp.CallID, act.CallID)
 			}
 			if exp.Args != "" {
-				match, err := jsonEqualExact([]byte(act.Args), []byte(exp.Args))
+				actArgs := act.Args
+				if b, ok := defaultToolBindingStore.LookupByClientID(act.CallID); ok {
+					actArgs = string(b.NativeArgs)
+				}
+				match, err := jsonEqualExact([]byte(actArgs), []byte(exp.Args))
 				if err != nil || !match {
 					return fmt.Errorf("history tool args tampered for call %q: committed %s != submitted %s", exp.CallID, exp.Args, act.Args)
 				}
@@ -302,6 +335,11 @@ func validateAntigravitySessionResume(scope antigravitySessionScope, in http.Hea
 	}
 	rec, ok := defaultAntigravityLedger.Lookup(scope, sessionRef)
 	if !ok {
+		if currentAntigravityPersister != nil {
+			if _, err := currentAntigravityPersister.LoadRound(scope, sessionRef); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("antigravity session record corrupted on disk: %w", err)
+			}
+		}
 		return fmt.Errorf("antigravity session not found in scope: %s", sessionRef)
 	}
 	if hist, ok := rec.Data["history"].([]canonicalPart); ok && len(hist) > 0 {

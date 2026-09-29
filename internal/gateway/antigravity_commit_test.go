@@ -191,3 +191,10 @@ func (t *trackingPersister) CommitRound(scope antigravitySessionScope, sessionRe
 	}
 	return nil
 }
+
+func (t *trackingPersister) LoadRound(scope antigravitySessionScope, sessionRef string) (*persistedRound, error) {
+	if t.failErr != nil {
+		return nil, t.failErr
+	}
+	return nil, nil
+}

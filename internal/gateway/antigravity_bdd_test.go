@@ -26,4 +26,5 @@ func TestAntigravityBDD(t *testing.T) {
 	t.Run("B13_CarrierlessHistory", testB13CarrierlessHistory)
 	t.Run("B14_HistoryIntegrity", testB14HistoryIntegrity)
 	t.Run("B15_PersistCommit", testB15PersistCommit)
+	t.Run("B16_ProcessRestart", testB16ProcessRestart)
 }

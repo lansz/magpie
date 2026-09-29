@@ -8,9 +8,18 @@ import (
 	"sync"
 )
 
+// persistedRound represents the serialized disk state of an Antigravity round.
+type persistedRound struct {
+	Scope     antigravitySessionScope  `json:"scope"`
+	Session   string                   `json:"session"`
+	Canonical []canonicalPart          `json:"canonical"`
+	Bindings  []AntigravityToolBinding `json:"bindings"`
+}
+
 // antigravityPersister defines the atomic persistence contract for an Antigravity round.
 type antigravityPersister interface {
 	CommitRound(scope antigravitySessionScope, sessionRef string, canonical []canonicalPart, bindings []AntigravityToolBinding) error
+	LoadRound(scope antigravitySessionScope, sessionRef string) (*persistedRound, error)
 }
 
 type fileAntigravityPersister struct {
@@ -35,12 +44,7 @@ func (p *fileAntigravityPersister) CommitRound(scope antigravitySessionScope, se
 		return nil
 	}
 
-	payload := struct {
-		Scope     antigravitySessionScope  `json:"scope"`
-		Session   string                   `json:"session"`
-		Canonical []canonicalPart          `json:"canonical"`
-		Bindings  []AntigravityToolBinding `json:"bindings"`
-	}{
+	payload := persistedRound{
 		Scope:     scope,
 		Session:   sessionRef,
 		Canonical: canonical,
@@ -75,6 +79,28 @@ func (p *fileAntigravityPersister) CommitRound(scope antigravitySessionScope, se
 		return fmt.Errorf("failed to atomically commit round file: %w", err)
 	}
 	return nil
+}
+
+func (p *fileAntigravityPersister) LoadRound(scope antigravitySessionScope, sessionRef string) (*persistedRound, error) {
+	p.Lock()
+	defer p.Unlock()
+
+	key := buildSessionLedgerKey(scope, sessionRef)
+	if key == "" {
+		return nil, os.ErrNotExist
+	}
+
+	destName := filepath.Join(p.baseDir, sanitizeFilename(key)+".json")
+	data, err := os.ReadFile(destName)
+	if err != nil {
+		return nil, err
+	}
+
+	var round persistedRound
+	if err := json.Unmarshal(data, &round); err != nil {
+		return nil, fmt.Errorf("corrupted session record: invalid json in %s: %w", destName, err)
+	}
+	return &round, nil
 }
 
 func sanitizeFilename(s string) string {
